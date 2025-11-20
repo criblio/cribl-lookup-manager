@@ -1387,26 +1387,127 @@ def delete_lookup(worker_group, lookup_filename):
         
         print(f"   [OK] Successfully deleted {lookup_filename}")
         
-        # Auto-commit the deletion
-        commit_message = f"Deleted lookup: {lookup_filename}"
-        commit_url = build_api_url(api_type, worker_group, path='/version/commit')
+        # Get the actual list of pending changes to do a true partial commit
+        print(f"   [STEP 2] Getting pending changes to identify deletion-related files...")
+        status_url = build_api_url(api_type, worker_group, path='/version/status')
         
-        commit_data = {
-            "message": commit_message,
-            "group": worker_group
-        }
-        
-        commit_response = requests.post(commit_url, json=commit_data, headers=headers, timeout=30)
-        commit_response.raise_for_status()
-        commit_result = commit_response.json()
-        
-        print(f"   [OK] Auto-committed deletion: {commit_result.get('version', 'unknown')[:8]}...")
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully deleted {lookup_filename}',
-            'committed': True
-        })
+        try:
+            status_response = requests.get(status_url, headers=headers, timeout=10)
+            status_response.raise_for_status()
+            status_data = status_response.json()
+            
+            print(f"   [DEBUG] Status response: {json.dumps(status_data, indent=2)}")
+            
+            # Try to extract the actual file paths from pending changes
+            pending_files = []
+            
+            # Try different response structures
+            if 'items' in status_data and isinstance(status_data['items'], list):
+                for item in status_data['items']:
+                    if isinstance(item, dict) and 'file' in item:
+                        pending_files.append(item['file'])
+                    elif isinstance(item, str):
+                        pending_files.append(item)
+            elif 'files' in status_data and isinstance(status_data['files'], list):
+                pending_files = status_data['files']
+            
+            print(f"   [INFO] Found {len(pending_files)} pending files")
+            if pending_files:
+                print(f"   [INFO] Pending files: {pending_files}")
+            
+            # Filter to only files related to the deleted lookup
+            lookup_base = Path(lookup_filename).stem
+            deletion_files = [f for f in pending_files if lookup_filename in f or lookup_base in f]
+            
+            print(f"   [INFO] Deletion-related files: {deletion_files}")
+            
+            # If we couldn't get the file list, build the expected paths manually
+            if not deletion_files:
+                print(f"   [WARNING] Could not identify deletion files from status response")
+                print(f"   [WARNING] Building expected paths manually...")
+                lookup_csv_path = f"groups/{worker_group}/data/lookups/{lookup_filename}"
+                lookup_yml_path = f"groups/{worker_group}/data/lookups/{lookup_base}.yml"
+                deletion_files = [lookup_csv_path, lookup_yml_path]
+                print(f"   [INFO] Expected deletion files: {deletion_files}")
+            
+            # Attempt partial commit with deletion files
+            print(f"   [STEP 3] Attempting partial commit of deletion files only...")
+            commit_message = f"Deleted lookup: {lookup_filename}"
+            commit_url = build_api_url(api_type, worker_group, path='/version/commit')
+            
+            commit_data = {
+                "message": commit_message,
+                "group": worker_group,
+                "files": deletion_files  # PARTIAL COMMIT - only deletion files
+            }
+            
+            print(f"   Commit URL: {commit_url}")
+            print(f"   Committing files (partial commit): {commit_data['files']}")
+            
+            try:
+                commit_response = requests.post(commit_url, json=commit_data, headers=headers, timeout=30)
+                commit_response.raise_for_status()
+                commit_result = commit_response.json()
+                
+                print(f"   [DATA] Commit response: {json.dumps(commit_result, indent=2)}")
+                
+                # Extract commit ID from response for deployment
+                commit_id = None
+                if 'items' in commit_result and isinstance(commit_result['items'], list) and len(commit_result['items']) > 0:
+                    first_item = commit_result['items'][0]
+                    commit_id = (first_item.get('commit') or 
+                                first_item.get('hash') or
+                                first_item.get('version'))
+                
+                if not commit_id:
+                    commit_id = commit_result.get('commit') or commit_result.get('hash') or commit_result.get('version', 'unknown')
+                
+                print(f"   [OK] Partial commit successful: {str(commit_id)[:8]}...")
+                print(f"   [OK] Only deletion files were committed (other pending changes untouched)")
+                
+                # Store commit ID for deployment (same as transfer)
+                app_config['last_transfer_commit_id'] = commit_id
+                app_config['last_transfer_group'] = worker_group
+                app_config['last_transfer_api_type'] = api_type
+                app_config['last_transfer_files'] = deletion_files
+                
+                print(f"   [INFO] Deletion committed and ready for partial deployment")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully deleted {lookup_filename}',
+                    'committed': True,
+                    'commit_id': commit_id,
+                    'partial_commit': True
+                })
+                
+            except requests.exceptions.HTTPError as commit_error:
+                # Partial commit with deleted files failed (likely 500 error)
+                print(f"   [ERROR] Partial commit failed: {commit_error.response.status_code}")
+                print(f"   [ERROR] This is expected - Cribl API may not support partial commit of deleted files")
+                print(f"   [WARNING] Deletion succeeded but NOT committed to prevent committing other changes")
+                print(f"   [WARNING] Please commit manually in Cribl UI to complete the deletion")
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Successfully deleted {lookup_filename} but could not do partial commit',
+                    'committed': False,
+                    'warning': 'Cribl API does not support partial commit of deleted files. Please commit manually in Cribl UI to avoid committing other pending changes.',
+                    'manual_commit_required': True
+                })
+                
+        except Exception as status_error:
+            print(f"   [ERROR] Could not get pending changes: {str(status_error)}")
+            print(f"   [WARNING] Cannot verify partial commit is possible")
+            print(f"   [WARNING] Deletion succeeded but NOT committing to be safe")
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully deleted {lookup_filename} but could not verify partial commit',
+                'committed': False,
+                'warning': 'Could not verify partial commit is safe. Please commit manually in Cribl UI.',
+                'manual_commit_required': True
+            })
         
     except requests.exceptions.HTTPError as e:
         error_msg = f"{e.response.status_code} {e.response.reason}"

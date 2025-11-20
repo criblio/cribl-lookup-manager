@@ -597,10 +597,6 @@
                         addConsoleLog(`[OK] Transfer successful: ${data.message}`, 'success');
                         showMessage(data.message, 'success');
                         
-                        // Mark that a file has been transferred and deployment is not complete - enable deploy button
-                        setHasTransferredFile(true);
-                        setDeploymentComplete(false);
-                        
                         // Auto-commit for disk-based lookups (they create tracked changes)
                         if (lookupType === 'file') {
                             addConsoleLog(`[INFO] Disk-based lookup detected - auto-committing changes...`, 'info');
@@ -630,9 +626,18 @@
                             } catch (commitError) {
                                 addConsoleLog(`[WARNING] Auto-commit error: ${commitError.message} - You'll need to commit manually`, 'warning');
                             }
+                            
+                            // Add a small delay to ensure backend commit has fully processed
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            addConsoleLog(`[INFO] Disk-based lookup transfer complete and committed - ready to deploy`, 'info');
                         } else {
                             addConsoleLog(`[INFO] Memory-based lookup - no commit needed`, 'info');
                         }
+                        
+                        // IMPORTANT: Enable deploy button ONLY AFTER commit completes
+                        // This prevents clicking Deploy too early which causes HTTP 500 errors
+                        setHasTransferredFile(true);
+                        setDeploymentComplete(false);
                         
                         // Refresh status from API
                         setTimeout(() => {
@@ -737,9 +742,6 @@
                             addConsoleLog(`[OK] Transfer successful: ${lookupType === 'memory' ? 'memory-based' : 'disk-based'}`, 'success');
                             showMessage(`Successfully replaced with new type: ${lookupType === 'memory' ? 'memory-based' : 'disk-based'}`, 'success');
                             
-                            setHasTransferredFile(true);
-                            setDeploymentComplete(false);
-                            
                             // Auto-commit for disk-based lookups after replace
                             if (lookupType === 'file') {
                                 addConsoleLog(`[INFO] Disk-based lookup detected - auto-committing changes...`, 'info');
@@ -769,7 +771,15 @@
                                 } catch (commitError) {
                                     addConsoleLog(`[WARNING] Auto-commit error: ${commitError.message} - You'll need to commit manually`, 'warning');
                                 }
+                                
+                                // Add a small delay to ensure backend commit has fully processed
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                addConsoleLog(`[INFO] Disk-based lookup replace complete and committed - ready to deploy`, 'info');
                             }
+                            
+                            // IMPORTANT: Enable deploy button ONLY AFTER commit completes
+                            setHasTransferredFile(true);
+                            setDeploymentComplete(false);
                             
                             // Clear conflict state
                             setModeConflictDetected(false);
@@ -825,9 +835,6 @@
                         addConsoleLog(`[OK] Transfer successful as ${newFilename}`, 'success');
                         showMessage(`Successfully transferred as: ${newFilename}`, 'success');
                         
-                        setHasTransferredFile(true);
-                        setDeploymentComplete(false);
-                        
                         // Auto-commit for disk-based lookups after rename
                         if (lookupType === 'file') {
                             addConsoleLog(`[INFO] Disk-based lookup detected - auto-committing changes...`, 'info');
@@ -857,7 +864,15 @@
                             } catch (commitError) {
                                 addConsoleLog(`[WARNING] Auto-commit error: ${commitError.message} - You'll need to commit manually`, 'warning');
                             }
+                            
+                            // Add a small delay to ensure backend commit has fully processed
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            addConsoleLog(`[INFO] Disk-based lookup rename complete and committed - ready to deploy`, 'info');
                         }
+                        
+                        // IMPORTANT: Enable deploy button ONLY AFTER commit completes
+                        setHasTransferredFile(true);
+                        setDeploymentComplete(false);
                         
                         // Clear conflict state
                         setModeConflictDetected(false);
@@ -1115,7 +1130,56 @@
                     const data = await res.json();
                     if (data.success) {
                         addConsoleLog(`[OK] Successfully deleted ${selectedLookup}`, 'success');
-                        showMessage(`Deleted ${selectedLookup}`, 'success');
+                        
+                        // Check if manual commit is required (partial commit failed)
+                        if (data.manual_commit_required) {
+                            addConsoleLog(`[WARNING] ${data.warning}`, 'warning');
+                            showMessage('Deleted but manual commit required', 'warning');
+                            addConsoleLog(`[INFO] Go to Cribl UI and commit only the deletion to avoid committing other changes`, 'info');
+                            addConsoleLog(`[INFO] Then deploy manually in Cribl UI`, 'info');
+                        } else if (!data.committed) {
+                            addConsoleLog(`[WARNING] ${data.warning}`, 'warning');
+                            showMessage(data.message, 'warning');
+                            addConsoleLog(`[INFO] Please commit manually in Cribl UI when ready`, 'info');
+                        } else {
+                            // Successfully committed with partial commit
+                            if (data.partial_commit) {
+                                addConsoleLog(`[OK] Partial commit successful - only deletion was committed`, 'success');
+                            }
+                            showMessage(`Deleted ${selectedLookup}`, 'success');
+                            
+                            // Auto-deploy for Stream/Edge (not Search - it doesn't need deployment)
+                            if (sourceApiType !== 'search' && data.committed) {
+                                addConsoleLog(`[INFO] Deletion committed - auto-deploying to ${sourceGroup}...`, 'info');
+                                
+                                // Add delay to ensure backend commit has fully processed (same as transfer)
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                
+                                try {
+                                    const deployRes = await fetch(`${API_BASE}/api/deploy`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            worker_group: sourceGroup,
+                                            api_type: sourceApiType
+                                        })
+                                    });
+                                    const deployData = await deployRes.json();
+                                    
+                                    if (deployData.success) {
+                                        addConsoleLog(`[OK] Deletion deployed to workers (partial deploy - only this change)`, 'success');
+                                        showMessage('Deleted and deployed', 'success');
+                                    } else {
+                                        addConsoleLog(`[WARNING] Auto-deploy failed: ${deployData.error}`, 'warning');
+                                        showMessage(`Deleted but deploy failed: ${deployData.error}`, 'warning');
+                                    }
+                                } catch (deployError) {
+                                    addConsoleLog(`[WARNING] Auto-deploy error: ${deployError.message}`, 'warning');
+                                    showMessage('Deleted but deploy failed', 'warning');
+                                }
+                            }
+                        }
+                        
                         setSelectedLookup('');
                         setSavedLookupName('');
                         setSavedLookupContent('');
@@ -1619,7 +1683,12 @@
                                         <div className="space-y-2.5">
                                             <div>
                                                 <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>API Type</label>
-                                                <select value={sourceApiType} onChange={(e) => setSourceApiType(e.target.value)} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
+                                                <select value={sourceApiType} onChange={(e) => {
+                                                    setSourceApiType(e.target.value);
+                                                    // Reset deploy state when source API type changes
+                                                    setHasTransferredFile(false);
+                                                    setDeploymentComplete(false);
+                                                }} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
                                                     <option value="search">Search</option>
                                                     <option value="stream">Stream</option>
                                                     <option value="edge">Edge</option>
@@ -1629,7 +1698,12 @@
                                             {sourceApiType !== 'search' && (
                                                 <div>
                                                     <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>{sourceApiType === 'edge' ? 'Fleet' : 'Worker Group'}</label>
-                                                    <select value={selectedSourceGroup} onChange={(e) => setSelectedSourceGroup(e.target.value)} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
+                                                    <select value={selectedSourceGroup} onChange={(e) => {
+                                                        setSelectedSourceGroup(e.target.value);
+                                                        // Reset deploy state when source group changes
+                                                        setHasTransferredFile(false);
+                                                        setDeploymentComplete(false);
+                                                    }} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
                                                         <option value="">Select...</option>
                                                         {sourceGroups.filter(g => {
                                                             const n=(g.name||g.id).toLowerCase();
@@ -1652,7 +1726,12 @@
 
                                             <div>
                                                 <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>Lookup File</label>
-                                                <select value={selectedLookup} onChange={(e) => setSelectedLookup(e.target.value)} disabled={!selectedSourceGroup && sourceApiType !== 'search'} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
+                                                <select value={selectedLookup} onChange={(e) => {
+                                                    setSelectedLookup(e.target.value);
+                                                    // Reset deploy state when selecting a new lookup file
+                                                    setHasTransferredFile(false);
+                                                    setDeploymentComplete(false);
+                                                }} disabled={!selectedSourceGroup && sourceApiType !== 'search'} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
                                                     <option value="">Select...</option>
                                                     {lookups.map(l => (<option key={l.id} value={l.id}>{l.id} ({(l.size/1024).toFixed(2)}KB)</option>))}
                                                 </select>
@@ -1688,7 +1767,12 @@
                                         <div className="space-y-2.5">
                                             <div>
                                                 <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>API Type</label>
-                                                <select value={targetApiType} onChange={(e) => setTargetApiType(e.target.value)} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none`}>
+                                                <select value={targetApiType} onChange={(e) => {
+                                                    setTargetApiType(e.target.value);
+                                                    // Reset deploy state when API type changes
+                                                    setHasTransferredFile(false);
+                                                    setDeploymentComplete(false);
+                                                }} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none`}>
                                                     <option value="search">Search</option>
                                                     <option value="stream">Stream</option>
                                                     <option value="edge">Edge</option>
@@ -1739,7 +1823,12 @@
                                             {targetApiType !== 'search' && (
                                                 <div>
                                                     <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>{targetApiType === 'edge' ? 'Fleet' : 'Worker Group'}</label>
-                                                    <select value={selectedTargetGroup} onChange={(e) => setSelectedTargetGroup(e.target.value)} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none`}>
+                                                    <select value={selectedTargetGroup} onChange={(e) => {
+                                                        setSelectedTargetGroup(e.target.value);
+                                                        // Reset deploy state when target group changes
+                                                        setHasTransferredFile(false);
+                                                        setDeploymentComplete(false);
+                                                    }} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none`}>
                                                         <option value="">Select...</option>
                                                         {targetGroups.filter(g => {
                                                             const n=(g.name||g.id).toLowerCase();
@@ -2082,52 +2171,6 @@
                                     )}
                                 </div>
 
-                                {/* Console */}
-                                <div className={`${cardClass} rounded-2xl p-6`}>
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h3 className={`text-lg font-semibold ${textClass} flex items-center`}>
-                                            <i className="fas fa-terminal mr-2"></i>
-                                            Console
-                                            {sessionInfo.token ? (
-                                                <span className="ml-2 text-xs text-green-500">
-                                                    <i className="fas fa-check-circle"></i> Ready
-                                                </span>
-                                            ) : (
-                                                <span className="ml-2 text-xs text-gray-500">
-                                                    <i className="fas fa-circle-notch fa-spin"></i> Loading...
-                                                </span>
-                                            )}
-                                        </h3>
-                                        <div className="flex items-center space-x-2">
-                                            {consoleLogs.length > 0 && (
-                                                <button
-                                                    onClick={() => setConsoleLogs([])}
-                                                    className={`px-3 py-1 rounded text-sm ${darkMode ? 'bg-orange-700 hover:bg-orange-600' : 'bg-orange-500 hover:bg-orange-600'} text-white transition-all`}
-                                                >
-                                                    <i className="fas fa-eraser mr-1"></i>Clear Logs
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Console Logs Section */}
-                                    {consoleLogs.length > 0 && (
-                                        <div className={`${darkMode ? 'bg-gray-900' : 'bg-gray-800'} rounded-lg p-4 mb-4 max-h-64 overflow-y-auto`}>
-                                            <div className="text-green-400 mb-2 text-xs font-bold">[LOGS]:</div>
-                                            {consoleLogs.map((log, idx) => (
-                                                <div key={idx} className={`text-xs mb-1 ${
-                                                    log.type === 'error' ? 'text-red-400' : 
-                                                    log.type === 'success' ? 'text-green-400' : 
-                                                    log.type === 'warning' ? 'text-yellow-400' : 
-                                                    'text-gray-300'
-                                                }`}>
-                                                    <span className="text-gray-500">[{log.timestamp}]</span> {log.message}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-
                                 {/* Recent API Commands */}
                                 <div className="bg-black rounded-2xl p-6 shadow-lg">
                                     <div className="flex items-center justify-between mb-4">
@@ -2217,6 +2260,52 @@
                                             </div>
                                         )}
                                     </div>
+                                </div>
+
+                                {/* Console */}
+                                <div className={`${cardClass} rounded-2xl p-6`}>
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className={`text-lg font-semibold ${textClass} flex items-center`}>
+                                            <i className="fas fa-terminal mr-2"></i>
+                                            Console
+                                            {sessionInfo.token ? (
+                                                <span className="ml-2 text-xs text-green-500">
+                                                    <i className="fas fa-check-circle"></i> Ready
+                                                </span>
+                                            ) : (
+                                                <span className="ml-2 text-xs text-gray-500">
+                                                    <i className="fas fa-circle-notch fa-spin"></i> Loading...
+                                                </span>
+                                            )}
+                                        </h3>
+                                        <div className="flex items-center space-x-2">
+                                            {consoleLogs.length > 0 && (
+                                                <button
+                                                    onClick={() => setConsoleLogs([])}
+                                                    className={`px-3 py-1 rounded text-sm ${darkMode ? 'bg-orange-700 hover:bg-orange-600' : 'bg-orange-500 hover:bg-orange-600'} text-white transition-all`}
+                                                >
+                                                    <i className="fas fa-eraser mr-1"></i>Clear Logs
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Console Logs Section */}
+                                    {consoleLogs.length > 0 && (
+                                        <div className={`${darkMode ? 'bg-gray-900' : 'bg-gray-800'} rounded-lg p-4 mb-4 max-h-64 overflow-y-auto`}>
+                                            <div className="text-green-400 mb-2 text-xs font-bold">[LOGS]:</div>
+                                            {consoleLogs.map((log, idx) => (
+                                                <div key={idx} className={`text-xs mb-1 ${
+                                                    log.type === 'error' ? 'text-red-400' : 
+                                                    log.type === 'success' ? 'text-green-400' : 
+                                                    log.type === 'warning' ? 'text-yellow-400' : 
+                                                    'text-gray-300'
+                                                }`}>
+                                                    <span className="text-gray-500">[{log.timestamp}]</span> {log.message}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
