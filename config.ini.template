@@ -1,0 +1,22 @@
+[cribl]
+# Cribl Cloud OAuth Client ID
+# Example: QtiEGHZ6Q8QwW6ncfbj3WL8ccurIPtYi
+client_id = your_client_id_here
+
+# Cribl Cloud OAuth Client Secret
+# Example: YZlYF91LhcgNQ1bZBNWUn4_aDVkezepe5DYxZVE3XGabRfkd4nfgn8IINs3SupwI
+client_secret = your_client_secret_here
+
+# Cribl Cloud Organization ID or URL
+# You can use any of these formats:
+#   - Just org ID: my-organization-name
+#   - Full URL: https://my-organization-name.cribl.cloud/
+# Example: main-amazing-varahamihira
+organization_id = your_organization_id_here
+
+# How to get these credentials:
+# 1. Log in to https://cloud.cribl.io
+# 2. Click your organization name → Organization Settings
+# 3. Navigate to "API Credentials" in the left sidebar
+# 4. Click "Create API Credential"
+# 5. Copy the Client ID and Client Secret (shown only once!)
