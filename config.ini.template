@@ -11,7 +11,7 @@ client_secret = your_client_secret_here
 # You can use any of these formats:
 #   - Just org ID: my-organization-name
 #   - Full URL: https://my-organization-name.cribl.cloud/
-# Example: main-amazing-varahamihira
+# Example: main-yourorg-name
 organization_id = your_organization_id_here
 
 # How to get these credentials:
