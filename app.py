@@ -490,12 +490,61 @@ def get_base_url():
     it constructs it from organization_id to avoid using the invalid 'app.cribl.cloud'.
     """
     base_url = app_config.get('base_url')
+    
+    # ALWAYS print what we got from config for debugging
+    print(f"[DEBUG] get_base_url() called - Current base_url in config: {base_url}")
+    
+    # Always validate base_url - if it contains double protocol or .cribl.cloud, reconstruct it
+    if base_url and ('https://https://' in base_url or '.cribl.cloud/.cribl.cloud' in base_url or 'https://' in base_url[8:]):
+        print(f"[WARNING] Detected malformed base_url: {base_url}")
+        print(f"[WARNING] Forcing reconstruction...")
+        base_url = None  # Force reconstruction
+    
     if not base_url and app_config.get('organization_id'):
         # Construct from organization_id if not already set
         org_id = app_config['organization_id']
-        base_url = f'https://{org_id}.cribl.cloud'
+        
+        print(f"[DEBUG] Reconstructing from org_id: {org_id}")
+        
+        # Clean up organization_id - remove protocol and trailing slashes
+        org_id = org_id.strip()
+        # Remove https:// or http:// prefix if present
+        if org_id.startswith('https://'):
+            org_id = org_id[8:]
+        elif org_id.startswith('http://'):
+            org_id = org_id[7:]
+        # Remove trailing slashes
+        org_id = org_id.rstrip('/')
+        
+        # If it already ends with .cribl.cloud, use as-is; otherwise add it
+        if org_id.endswith('.cribl.cloud'):
+            base_url = f'https://{org_id}'
+        else:
+            base_url = f'https://{org_id}.cribl.cloud'
+        
         print(f"[DEBUG] Constructed base_url from org_id: {base_url}")
-    return base_url or f"https://{app_config.get('organization_id', 'unknown')}.cribl.cloud"
+        # Update the stored value with the corrected one
+        app_config['base_url'] = base_url
+    
+    # Final fallback with proper cleaning
+    if not base_url and app_config.get('organization_id'):
+        org_id = app_config.get('organization_id', 'unknown')
+        print(f"[DEBUG] Final fallback, org_id: {org_id}")
+        # Clean it before using
+        org_id = org_id.strip()
+        if org_id.startswith('https://'):
+            org_id = org_id[8:]
+        elif org_id.startswith('http://'):
+            org_id = org_id[7:]
+        org_id = org_id.rstrip('/')
+        
+        if org_id.endswith('.cribl.cloud'):
+            base_url = f'https://{org_id}'
+        else:
+            base_url = f'https://{org_id}.cribl.cloud'
+    
+    print(f"[DEBUG] get_base_url() returning: {base_url}")
+    return base_url
 
 def build_api_url(api_type, worker_group=None, path='', query=''):
     """Build API URL based on tenant type and API type
@@ -590,10 +639,133 @@ def login():
         print(f"   [ERROR] Authentication failed: {str(e)}")
         return jsonify({'error': str(e)}), 401
 
+@app.route('/api/test-curl', methods=['POST'])
+def test_curl():
+    """Test API endpoint connectivity (secured version)"""
+    if not app_config['authenticated']:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
+    data = request.json
+    api_type = data.get('api_type', 'stream')
+    worker_group = data.get('worker_group')
+    
+    print(f"\n[TEST] Testing API connectivity for {api_type}")
+    if worker_group:
+        print(f"   Worker Group: {worker_group}")
+    
+    try:
+        # Validate API type
+        validate_api_type(api_type)
+        
+        token = app_config['token']
+        base_url = get_base_url()
+        
+        print(f"   Base URL: {base_url}")
+        
+        results = []
+        
+        # Test 1: List worker groups
+        try:
+            if api_type == 'edge':
+                test_url = f"{base_url}/api/v1/products/edge/groups"
+            else:
+                test_url = f"{base_url}/api/v1/master/groups"
+            
+            print(f"   Testing: {test_url}")
+            response = requests.get(test_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            results.append({
+                'endpoint': 'List Groups',
+                'url': test_url,
+                'status': response.status_code,
+                'success': response.status_code == 200,
+                'message': 'OK' if response.status_code == 200 else f"HTTP {response.status_code}"
+            })
+        except Exception as e:
+            results.append({
+                'endpoint': 'List Groups',
+                'url': test_url,
+                'status': 0,
+                'success': False,
+                'message': str(e)
+            })
+        
+        # Test 2: List lookups (if worker group provided)
+        if worker_group:
+            try:
+                validate_worker_group(worker_group)
+                
+                if api_type == 'edge':
+                    test_url = f"{base_url}/api/v1/f/{worker_group}/system/lookups"
+                else:
+                    test_url = f"{base_url}/api/v1/m/{worker_group}/system/lookups"
+                
+                print(f"   Testing: {test_url}")
+                response = requests.get(test_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                results.append({
+                    'endpoint': 'List Lookups',
+                    'url': test_url,
+                    'status': response.status_code,
+                    'success': response.status_code == 200,
+                    'message': 'OK' if response.status_code == 200 else f"HTTP {response.status_code}"
+                })
+            except Exception as e:
+                results.append({
+                    'endpoint': 'List Lookups',
+                    'url': test_url,
+                    'status': 0,
+                    'success': False,
+                    'message': str(e)
+                })
+        
+        # Test 3: Version endpoint (if worker group provided)
+        if worker_group:
+            try:
+                if api_type == 'edge':
+                    test_url = f"{base_url}/api/v1/f/{worker_group}/version"
+                else:
+                    test_url = f"{base_url}/api/v1/m/{worker_group}/version"
+                
+                print(f"   Testing: {test_url}")
+                response = requests.get(test_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                results.append({
+                    'endpoint': 'Version',
+                    'url': test_url,
+                    'status': response.status_code,
+                    'success': response.status_code in [200, 404],  # 404 is OK for version
+                    'message': 'OK' if response.status_code == 200 else f"HTTP {response.status_code} (may not be supported)"
+                })
+            except Exception as e:
+                results.append({
+                    'endpoint': 'Version',
+                    'url': test_url,
+                    'status': 0,
+                    'success': False,
+                    'message': str(e)
+                })
+        
+        print(f"   [OK] Test completed - {len([r for r in results if r['success']])}/{len(results)} passed")
+        
+        return jsonify({
+            'success': True,
+            'results': results,
+            'base_url': base_url
+        })
+        
+    except Exception as e:
+        print(f"   [ERROR] Test failed: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/logout', methods=['POST'])
 def logout():
     """Clear session data"""
-    session.clear()
+    app_config['authenticated'] = False
+    app_config['token'] = None
+    app_config['client_id'] = None
+    app_config['client_secret'] = None
+    app_config['organization_id'] = None
+    app_config['base_url'] = None
+    app_config['is_direct_tenant'] = False
+    print("[INFO] User logged out - session cleared")
     return jsonify({'success': True, 'message': 'Logged out successfully'})
 
 @app.route('/api/auth/status', methods=['GET'])
@@ -1678,6 +1850,17 @@ def get_current_version():
         print(f"   [INFO] Querying: {version_url}")
         
         response = requests.get(version_url, headers=headers, timeout=10)
+        
+        # Handle 404 gracefully - endpoint might not exist for this worker group
+        if response.status_code == 404:
+            print(f"   [WARNING] /version endpoint not found for {worker_group} (HTTP 404)")
+            print(f"   [INFO] This worker group may not support version tracking")
+            return jsonify({
+                'success': True,
+                'version': None,
+                'warning': 'Version endpoint not available for this worker group'
+            })
+        
         response.raise_for_status()
         version_data = response.json()
         
