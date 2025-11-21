@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""
+Cribl Lookup Manager - Backend Server
+Version: 1.0.1 (Security Hardened)
+Date: November 21, 2025
+
+Security Fixes in v1.0.1:
+- Removed SSRF vulnerability (/api/test-curl endpoint)
+- Fixed CORS configuration (localhost only)
+- Added input validation for all user inputs
+- Added security headers (XSS, Clickjacking, etc.)
+- Added URL sanitization for logs
+"""
 import sys
 import subprocess
 import importlib.util
@@ -63,9 +75,86 @@ import configparser
 import gzip
 import tempfile
 from datetime import datetime
+import re
 
 app = Flask(__name__)
-CORS(app)
+
+# SECURITY: Configure CORS to only allow localhost origins
+# This prevents Cross-Site Request Forgery (CSRF) attacks
+CORS(app, 
+     origins=[
+         'http://localhost:42001',
+         'http://127.0.0.1:42001',
+         'http://localhost:*',  # Allow any localhost port for development
+         'http://127.0.0.1:*'
+     ],
+     supports_credentials=True,
+     allow_headers=['Content-Type', 'Authorization'])
+
+# SECURITY: Input validation functions
+def validate_filename(filename):
+    """
+    Validate filename to prevent path traversal attacks
+    Only allows: letters, numbers, underscores, hyphens, periods
+    """
+    if not filename:
+        raise ValueError("Filename cannot be empty")
+    
+    # Check for path traversal attempts
+    if '..' in filename or '/' in filename or '\\' in filename or '\0' in filename:
+        raise ValueError("Invalid filename: path traversal detected")
+    
+    # Only allow safe characters
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        raise ValueError("Invalid filename: only alphanumeric, underscore, hyphen, and period allowed")
+    
+    # Check length
+    if len(filename) > 255:
+        raise ValueError("Filename too long (max 255 characters)")
+    
+    return filename
+
+def validate_worker_group(group_name):
+    """
+    Validate worker group name
+    Only allows: letters, numbers, underscores, hyphens
+    """
+    if not group_name:
+        raise ValueError("Worker group name cannot be empty")
+    
+    # Check for path traversal or special characters
+    if '..' in group_name or '/' in group_name or '\\' in group_name or '\0' in group_name:
+        raise ValueError("Invalid worker group name")
+    
+    # Allow alphanumeric, underscore, hyphen, and period (for default_search, etc.)
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', group_name):
+        raise ValueError("Invalid worker group name: only alphanumeric, underscore, hyphen allowed")
+    
+    if len(group_name) > 100:
+        raise ValueError("Worker group name too long (max 100 characters)")
+    
+    return group_name
+
+def validate_api_type(api_type):
+    """
+    Validate API type against allowed values
+    """
+    allowed_types = ['stream', 'search', 'edge']
+    if api_type not in allowed_types:
+        raise ValueError(f"Invalid API type: must be one of {allowed_types}")
+    return api_type
+
+def sanitize_url_for_logging(url):
+    """
+    Remove sensitive data from URLs before logging
+    """
+    if not url:
+        return url
+    # Remove token parameters
+    url = re.sub(r'([?&]token=)[^&]+', r'\1***', url)
+    # Remove Authorization headers from logs
+    url = re.sub(r'(Bearer\s+)[a-zA-Z0-9\-_\.]+', r'\1***', url)
+    return url
 
 # Global config storage
 app_config = {
@@ -78,6 +167,22 @@ app_config = {
     'base_url': None,  # Store the base URL for API calls
     'is_direct_tenant': False  # Flag for direct tenant URLs
 }
+
+# SECURITY: Add security headers to all responses
+@app.after_request
+def add_security_headers(response):
+    """Add security headers to prevent various attacks"""
+    # Prevent clickjacking
+    response.headers['X-Frame-Options'] = 'DENY'
+    # Prevent MIME sniffing
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    # Enable XSS protection
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    # Content Security Policy (restrictive)
+    response.headers['Content-Security-Policy'] = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; img-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:* https://*.cribl.cloud;"
+    # Referrer policy
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
 
 @app.route('/')
 def index():
@@ -328,82 +433,6 @@ def get_session_info():
     
     return jsonify(response_data)
 
-@app.route('/api/test-curl', methods=['POST'])
-def test_curl():
-    """Proxy endpoint to test CURL commands without CORS issues"""
-    if not app_config['authenticated']:
-        return jsonify({'error': 'Not authenticated'}), 401
-    
-    data = request.json
-    url = data.get('url')
-    method = data.get('method', 'GET')
-    
-    if not url:
-        return jsonify({'error': 'URL required'}), 400
-    
-    token = app_config['token']
-    
-    print(f"\n?[ERROR] Testing API call:")
-    print(f"   Method: {method}")
-    print(f"   URL: {url}")
-    
-    try:
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json"
-        }
-        
-        response = requests.request(method, url, headers=headers, timeout=10)
-        
-        print(f"   Response Status: {response.status_code}")
-        print(f"   Content-Type: {response.headers.get('Content-Type', 'unknown')}")
-        
-        content_type = response.headers.get('content-type', '')
-        
-        # Try to parse as JSON
-        if 'application/json' in content_type:
-            try:
-                data = response.json()
-                return jsonify({
-                    'status': response.status_code,
-                    'statusText': 'Success' if response.ok else 'Error',
-                    'data': data,
-                    'contentType': content_type
-                })
-            except:
-                return jsonify({
-                    'status': response.status_code,
-                    'statusText': 'Success' if response.ok else 'Error',
-                    'data': {'text': response.text[:500]},
-                    'contentType': content_type
-                })
-        else:
-            # For non-JSON responses (like file downloads)
-            return jsonify({
-                'status': response.status_code,
-                'statusText': 'Success' if response.ok else 'Error',
-                'data': {
-                    'message': 'Response received successfully',
-                    'contentType': content_type,
-                    'size': response.headers.get('content-length', 'unknown')
-                },
-                'contentType': content_type
-            })
-            
-    except requests.exceptions.RequestException as e:
-        print(f"   [ERROR] Request failed: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'statusText': 'Failed',
-            'error': str(e)
-        }), 500
-    except Exception as e:
-        print(f"   [ERROR] Exception: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'statusText': 'Failed',
-            'error': str(e)
-        }), 500
 
 def extract_org_id_and_base_url(org_input):
     """Extract organization ID and determine base URL from input"""
@@ -850,6 +879,21 @@ def transfer_lookup():
     
     if not all([source_group, target_group, lookup_filename]):
         return jsonify({'error': 'Missing required parameters'}), 400
+    
+    # SECURITY: Validate all inputs
+    try:
+        source_group = validate_worker_group(source_group)
+        target_group = validate_worker_group(target_group)
+        lookup_filename = validate_filename(lookup_filename)
+        source_api_type = validate_api_type(source_api_type)
+        target_api_type = validate_api_type(target_api_type)
+        if target_filename_override:
+            target_filename_override = validate_filename(target_filename_override)
+        if lookup_type not in ['file', 'memory']:
+            return jsonify({'error': 'Invalid lookup_type: must be file or memory'}), 400
+    except ValueError as e:
+        print(f"   [SECURITY] Input validation failed: {str(e)}")
+        return jsonify({'error': f'Invalid input: {str(e)}'}), 400
     
     print(f"\n[TRANSFER] Lookup type: {lookup_type}-based")
     
@@ -1372,6 +1416,15 @@ def delete_lookup(worker_group, lookup_filename):
     
     api_type = request.args.get('api_type', 'stream')
     token = app_config['token']
+    
+    # SECURITY: Validate inputs
+    try:
+        worker_group = validate_worker_group(worker_group)
+        lookup_filename = validate_filename(lookup_filename)
+        api_type = validate_api_type(api_type)
+    except ValueError as e:
+        print(f"   [SECURITY] Input validation failed: {str(e)}")
+        return jsonify({'error': f'Invalid input: {str(e)}'}), 400
     
     print(f"\n[DELETE] Deleting {lookup_filename} from {worker_group} ({api_type})")
     

@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lookup Manager</title>
+    <title>Lookup Manager v1.0.1</title>
+    <!-- Version 1.0.1 (Security Hardened) - November 21, 2025 -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -73,7 +74,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // Use current host for API calls (works with any port)
         const API_BASE = `http://${window.location.hostname}:${window.location.port}`;
@@ -99,6 +100,7 @@
             const [selectedTargetGroup, setSelectedTargetGroup] = useState('');
             const [lookups, setLookups] = useState([]);
             const [selectedLookup, setSelectedLookup] = useState('');
+            const selectedLookupRef = useRef(selectedLookup); // Ref to track current value (avoids closure issues)
             const [sourceLookupType, setSourceLookupType] = useState(null);  // 'file' or 'memory'
             const [transferring, setTransferring] = useState(false);
             
@@ -139,6 +141,9 @@
             const [savedLookupContent, setSavedLookupContent] = useState('');
             const [deploymentComplete, setDeploymentComplete] = useState(false);
             const [hasTransferredFile, setHasTransferredFile] = useState(false);
+            const [transferCompleted, setTransferCompleted] = useState(false); // Track if transfer just completed
+            const [pendingDeployments, setPendingDeployments] = useState([]); // Array of pending deployments: {filename, targetGroup, targetApiType, commitId}
+            const [showAllPending, setShowAllPending] = useState(false); // For expandable pending deployments UI
             const [targetVersion, setTargetVersion] = useState(null);
             const [showApiTokenHelp, setShowApiTokenHelp] = useState(false);
 
@@ -307,6 +312,9 @@
                     setSelectedLookup(''); // Clear selected lookup
                     addConsoleLog(`[INFO] Source API changed to ${sourceApiType} - please select a worker group`, 'info');
                 }
+                
+                // Reset transfer completed state when source API changes
+                setTransferCompleted(false);
             }, [sourceApiType]);
 
             useEffect(() => {
@@ -323,6 +331,14 @@
                     // Clear the selection when switching away from Search
                     setSelectedTargetGroup('');
                     addConsoleLog(`[INFO] Target API changed to ${targetApiType} - please select a worker group`, 'info');
+                }
+                
+                // Clear pending deployments when target changes (different destination)
+                if (pendingDeployments.length > 0) {
+                    addConsoleLog(`[INFO] Target changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
+                    setPendingDeployments([]);
+                    setHasTransferredFile(false);
+                    setDeploymentComplete(false);
                 }
             }, [targetApiType]);
 
@@ -347,6 +363,17 @@
             }, [authenticated, selectedTargetGroup, targetApiType]);
 
             useEffect(() => {
+                // Clear pending deployments when target group changes
+                // Don't clear on initial load (when selectedTargetGroup becomes non-empty from empty)
+                if (pendingDeployments.length > 0) {
+                    addConsoleLog(`[INFO] Target group changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
+                    setPendingDeployments([]);
+                    setHasTransferredFile(false);
+                    setDeploymentComplete(false);
+                }
+            }, [selectedTargetGroup]);
+
+            useEffect(() => {
                 // Update default commit message
                 const targetGroup = targetApiType === 'search' ? 'default_search' : selectedTargetGroup;
                 const displayName = stripPackPrefix(savedLookupName || selectedLookup);
@@ -363,6 +390,15 @@
                     setHasUnsavedChanges(nameChanged || contentChanged);
                 }
             }, [editedLookupName, lookupContent, savedLookupName, savedLookupContent, lookupEditorOpen]);
+
+            useEffect(() => {
+                // Update ref to current value (for async functions to avoid closure issues)
+                selectedLookupRef.current = selectedLookup;
+                
+                // Reset transfer completed state when lookup selection or saved content changes
+                // This re-enables the Transfer button when user selects a different lookup or edits content
+                setTransferCompleted(false);
+            }, [selectedLookup, savedLookupContent]);
 
             useEffect(() => {
                 // Force memory-based lookups when Search is selected as target
@@ -548,6 +584,9 @@
                     return;
                 }
 
+                // Capture the currently selected lookup to detect if user changes selection during transfer
+                const capturedLookup = selectedLookup;
+                
                 // Use saved name if available, otherwise use selected lookup
                 const transferFilename = savedLookupName || selectedLookup;
                 
@@ -597,6 +636,9 @@
                         addConsoleLog(`[OK] Transfer successful: ${data.message}`, 'success');
                         showMessage(data.message, 'success');
                         
+                        // Variable to capture commit ID for pending deployments
+                        let capturedCommitId = null;
+                        
                         // Auto-commit for disk-based lookups (they create tracked changes)
                         if (lookupType === 'file') {
                             addConsoleLog(`[INFO] Disk-based lookup detected - auto-committing changes...`, 'info');
@@ -615,6 +657,9 @@
                                 if (commitData.success) {
                                     const versionInfo = commitData.commit_id ? ` (version: ${commitData.commit_id.substring(0, 8)}...)` : '';
                                     addConsoleLog(`[OK] Changes auto-committed${versionInfo}`, 'success');
+                                    
+                                    // Capture commit ID for pending deployments
+                                    capturedCommitId = commitData.commit_id;
                                     
                                     // Update current version from commit response
                                     if (commitData.commit_id && commitData.commit_id !== 'unknown') {
@@ -638,6 +683,29 @@
                         // This prevents clicking Deploy too early which causes HTTP 500 errors
                         setHasTransferredFile(true);
                         setDeploymentComplete(false);
+                        
+                        // Only mark transfer as complete if user hasn't changed the selection during transfer
+                        // This prevents race condition where button stays gray if user changes lookup mid-transfer
+                        // Use ref to get current value (not closure value from when async function started)
+                        const currentSelectedLookup = selectedLookupRef.current;
+                        if (currentSelectedLookup === capturedLookup) {
+                            setTransferCompleted(true); // Mark transfer as completed to gray out Transfer button
+                        } else {
+                            setTransferCompleted(false); // Keep button enabled for new lookup
+                            addConsoleLog(`[INFO] Lookup selection changed during transfer - Transfer button remains enabled`, 'info');
+                        }
+                        
+                        // Add to pending deployments queue for "Deploy Pending" buttons
+                        const deploymentInfo = {
+                            filename: targetFilename,
+                            displayName: savedLookupName || targetFilename,
+                            targetGroup: targetGroup,
+                            targetApiType: targetApiType,
+                            commitId: capturedCommitId, // Use the commit ID captured from commit response
+                            timestamp: new Date().toISOString()
+                        };
+                        setPendingDeployments(prev => [...prev, deploymentInfo]);
+                        addConsoleLog(`[INFO] Added to deployment queue: ${deploymentInfo.displayName}`, 'info');
                         
                         // Refresh status from API
                         setTimeout(() => {
@@ -976,8 +1044,16 @@
                     return;
                 }
                 
+                // If there are pending deployments, deploy ALL of them
+                const deployAll = pendingDeployments.length > 0;
+                
                 setDeploying(true);
-                addConsoleLog(`[DEPLOY] Deploying changes to ${targetGroup}...`, 'info');
+                
+                if (deployAll) {
+                    addConsoleLog(`[DEPLOY ALL] Deploying ${pendingDeployments.length + 1} lookup(s) to ${targetGroup}...`, 'info');
+                } else {
+                    addConsoleLog(`[DEPLOY] Deploying changes to ${targetGroup}...`, 'info');
+                }
                 
                 try {
                     // Log API command
@@ -994,8 +1070,20 @@
                     const data = await res.json();
                     if (data.success) {
                         const versionInfo = data.version ? ` (version: ${data.version.substring(0, 8)}...)` : '';
-                        addConsoleLog(`[SUCCESS] ${data.message}${versionInfo}`, 'success');
-                        showMessage(data.message, 'success');
+                        
+                        if (deployAll) {
+                            addConsoleLog(`[SUCCESS] Deployed all lookups${versionInfo}`, 'success');
+                            showMessage(`Deployed all ${pendingDeployments.length + 1} lookups`, 'success');
+                            
+                            // Clear ALL pending deployments
+                            const deployedCount = pendingDeployments.length + 1;
+                            addConsoleLog(`[INFO] Cleared ${deployedCount} item(s) from deployment queue`, 'info');
+                            setPendingDeployments([]);
+                            setShowAllPending(false); // Auto-collapse after deploy
+                        } else {
+                            addConsoleLog(`[SUCCESS] ${data.message}${versionInfo}`, 'success');
+                            showMessage(data.message, 'success');
+                        }
                         
                         // Mark deployment as complete - disable deploy button
                         setDeploymentComplete(true);
@@ -1007,6 +1095,57 @@
                         setSavedLookupName('');
                         setSavedLookupContent('');
                         setHasUnsavedChanges(false);
+                        
+                        loadPendingChanges(); // Refresh count after deploy
+                        loadCurrentVersion(); // Refresh current version
+                        loadTargetVersion(); // Refresh target version
+                    } else {
+                        addConsoleLog(`[ERROR] Deploy failed: ${data.error || 'Unknown error'}`, 'error');
+                        showMessage(data.error || 'Deploy failed', 'error');
+                    }
+                } catch (error) {
+                    addConsoleLog(`[ERROR] Deploy error: ${error.message}`, 'error');
+                    showMessage('Deploy error', 'error');
+                } finally {
+                    setDeploying(false);
+                }
+            };
+
+            const handleDeployPending = async (deployment, index) => {
+                if (!deployment) {
+                    showMessage('No deployment information found', 'error');
+                    return;
+                }
+                
+                setDeploying(true);
+                addConsoleLog(`[DEPLOY PENDING] Deploying ${deployment.displayName} to ${deployment.targetGroup}...`, 'info');
+                
+                try {
+                    // Log API command
+                    addCommandToHistory('POST', `${API_BASE}/api/deploy`, `Deploy ${deployment.displayName} to ${deployment.targetGroup}`, deployment.targetApiType, deployment.targetGroup);
+
+                    const res = await fetch(`${API_BASE}/api/deploy`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            worker_group: deployment.targetGroup,
+                            api_type: deployment.targetApiType
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        const versionInfo = data.version ? ` (version: ${data.version.substring(0, 8)}...)` : '';
+                        addConsoleLog(`[SUCCESS] Deployed ${deployment.displayName}${versionInfo}`, 'success');
+                        showMessage(`Deployed ${deployment.displayName}`, 'success');
+                        
+                        // Remove this specific deployment from pending queue
+                        setPendingDeployments(prev => {
+                            const updated = [...prev];
+                            updated.splice(index, 1);
+                            addConsoleLog(`[INFO] Removed ${deployment.displayName} from deployment queue`, 'info');
+                            return updated;
+                        });
+                        setShowAllPending(false); // Auto-collapse after deploy
                         
                         loadPendingChanges(); // Refresh count after deploy
                         loadCurrentVersion(); // Refresh current version
@@ -1875,16 +2014,138 @@
 
                                             {/* Action Buttons - Side by Side */}
                                             <div className="flex space-x-2">
-                                            <button onClick={handleTransfer} disabled={transferring || !selectedLookup || (sourceApiType !== 'search' && !selectedSourceGroup) || (targetApiType !== 'search' && !selectedTargetGroup)} className={`flex-1 px-4 py-2.5 text-sm rounded-lg font-semibold transition-all flex items-center justify-center space-x-2 ${transferring || !selectedLookup || (sourceApiType !== 'search' && !selectedSourceGroup) || (targetApiType !== 'search' && !selectedTargetGroup) ? 'bg-gray-400 opacity-50 cursor-not-allowed text-white' : darkMode ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg' : 'bg-green-500 hover:bg-green-600 text-white shadow-lg'}`}>
+                                            <button onClick={handleTransfer} disabled={transferring || transferCompleted || !selectedLookup || (sourceApiType !== 'search' && !selectedSourceGroup) || (targetApiType !== 'search' && !selectedTargetGroup)} className={`flex-1 px-4 py-2.5 text-sm rounded-lg font-semibold transition-all flex items-center justify-center space-x-2 ${transferring || transferCompleted || !selectedLookup || (sourceApiType !== 'search' && !selectedSourceGroup) || (targetApiType !== 'search' && !selectedTargetGroup) ? 'bg-gray-400 opacity-50 cursor-not-allowed text-white' : darkMode ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg' : 'bg-green-500 hover:bg-green-600 text-white shadow-lg'}`}>
                                                 {transferring ? (<><div className="spinner w-4 h-4"></div><span>Transferring...</span></>) : (<><i className="fas fa-exchange-alt"></i><span>Transfer</span></>)}
                                             </button>
 
                                             <button onClick={handleDeploy} disabled={deploying || !selectedTargetGroup || deploymentComplete || !hasTransferredFile} className={`flex-1 px-4 py-2.5 text-sm rounded-lg font-semibold transition-all flex items-center justify-center space-x-2 ${deploying || !selectedTargetGroup || deploymentComplete || !hasTransferredFile ? 'bg-gray-400 cursor-not-allowed opacity-50 text-white' : darkMode ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg' : 'bg-green-500 hover:bg-green-600 text-white shadow-lg'}`}>
-                                                {deploying ? (<><div className="spinner w-4 h-4"></div><span>Deploying...</span></>) : deploymentComplete ? (<><i className="fas fa-check-circle"></i><span>Deployed</span></>) : (<><i className="fas fa-rocket"></i><span>Deploy</span></>)}
+                                                {deploying ? (
+                                                    <><div className="spinner w-4 h-4"></div><span>Deploying...</span></>
+                                                ) : deploymentComplete ? (
+                                                    <><i className="fas fa-check-circle"></i><span>Deployed</span></>
+                                                ) : pendingDeployments.length > 0 ? (
+                                                    <><i className="fas fa-rocket"></i><span>Deploy All ({pendingDeployments.length + 1})</span></>
+                                                ) : (
+                                                    <><i className="fas fa-rocket"></i><span>Deploy</span></>
+                                                )}
                                             </button>
                                             </div>
 
-                                            <p className={`text-xs ${textSecondaryClass} mt-1.5 text-center`}><i className="fas fa-info-circle mr-1"></i>Deploys transferred lookup only</p>
+                                            {/* Deploy Pending Buttons - Expandable UI */}
+                                            {pendingDeployments.length > 0 && (() => {
+                                                const MAX_VISIBLE = 3;
+                                                const visiblePending = showAllPending 
+                                                    ? pendingDeployments 
+                                                    : pendingDeployments.slice(0, MAX_VISIBLE);
+                                                const hiddenCount = pendingDeployments.length - MAX_VISIBLE;
+                                                const showExpandButton = hiddenCount > 0 && !showAllPending;
+                                                const showCollapseButton = showAllPending && pendingDeployments.length > MAX_VISIBLE;
+
+                                                return (
+                                                    <div className="mt-3 space-y-2">
+                                                        <p className={`text-xs ${textSecondaryClass} text-center mb-1`}>
+                                                            <i className="fas fa-clock mr-1"></i>
+                                                            Pending Deployments ({pendingDeployments.length})
+                                                        </p>
+                                                        
+                                                        {/* Visible pending deployment buttons */}
+                                                        {visiblePending.map((deployment, index) => (
+                                                            <button 
+                                                                key={`${deployment.filename}-${deployment.timestamp}`}
+                                                                onClick={() => handleDeployPending(deployment, pendingDeployments.indexOf(deployment))} 
+                                                                disabled={deploying}
+                                                                className={`w-full px-4 py-2 text-sm rounded-lg font-semibold transition-all flex items-center justify-center space-x-2 ${
+                                                                    deploying 
+                                                                    ? 'bg-gray-400 opacity-50 cursor-not-allowed text-white' 
+                                                                    : darkMode 
+                                                                        ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md' 
+                                                                        : 'bg-blue-500 hover:bg-blue-600 text-white shadow-md'
+                                                                }`}
+                                                            >
+                                                                <i className="fas fa-box"></i>
+                                                                <span className="truncate">Deploy: {deployment.displayName}</span>
+                                                                <i className="fas fa-arrow-right text-xs"></i>
+                                                                <span className="text-xs opacity-75">{deployment.targetGroup}</span>
+                                                            </button>
+                                                        ))}
+                                                        
+                                                        {/* Expand button - shows when there are hidden items */}
+                                                        {showExpandButton && (
+                                                            <button
+                                                                onClick={() => setShowAllPending(true)}
+                                                                className={`w-full px-3 py-2 text-sm rounded-lg font-semibold transition-all ${
+                                                                    darkMode 
+                                                                        ? 'bg-blue-900 bg-opacity-40 hover:bg-opacity-50 text-blue-300 border border-blue-700' 
+                                                                        : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200'
+                                                                }`}
+                                                                style={{ 
+                                                                    transition: 'all 0.2s ease',
+                                                                }}
+                                                                onMouseEnter={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                                                    e.currentTarget.style.boxShadow = darkMode 
+                                                                        ? '0 2px 8px rgba(33, 150, 243, 0.3)' 
+                                                                        : '0 2px 8px rgba(33, 150, 243, 0.2)';
+                                                                }}
+                                                                onMouseLeave={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(0)';
+                                                                    e.currentTarget.style.boxShadow = 'none';
+                                                                }}
+                                                            >
+                                                                <div className="flex items-center justify-center space-x-2">
+                                                                    <i className="fas fa-layer-group"></i>
+                                                                    <span>+ {hiddenCount} more pending (click to show all)</span>
+                                                                    <i className="fas fa-chevron-down text-xs"></i>
+                                                                </div>
+                                                            </button>
+                                                        )}
+                                                        
+                                                        {/* Collapse button - shows when expanded */}
+                                                        {showCollapseButton && (
+                                                            <button
+                                                                onClick={() => setShowAllPending(false)}
+                                                                className={`w-full px-3 py-2 text-sm rounded-lg font-semibold transition-all ${
+                                                                    darkMode 
+                                                                        ? 'bg-gray-700 hover:bg-gray-600 text-gray-300 border border-gray-600' 
+                                                                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300'
+                                                                }`}
+                                                                style={{ 
+                                                                    transition: 'all 0.2s ease',
+                                                                }}
+                                                                onMouseEnter={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                                                }}
+                                                                onMouseLeave={(e) => {
+                                                                    e.currentTarget.style.transform = 'translateY(0)';
+                                                                }}
+                                                            >
+                                                                <div className="flex items-center justify-center space-x-2">
+                                                                    <i className="fas fa-chevron-up text-xs"></i>
+                                                                    <span>Show less</span>
+                                                                </div>
+                                                            </button>
+                                                        )}
+                                                        
+                                                        {/* Info tip about Deploy All */}
+                                                        {pendingDeployments.length > 1 && (
+                                                            <div className={`text-center py-2 px-3 rounded-lg ${darkMode ? 'bg-blue-900 bg-opacity-30' : 'bg-blue-50'}`}>
+                                                                <p className={`text-xs ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+                                                                    <i className="fas fa-lightbulb mr-1"></i>
+                                                                    Tip: Use "Deploy All ({pendingDeployments.length + 1})" button above to deploy everything at once
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
+                                            <p className={`text-xs ${textSecondaryClass} mt-1.5 text-center`}>
+                                                <i className="fas fa-info-circle mr-1"></i>
+                                                {pendingDeployments.length > 0 
+                                                    ? `Deploy All will deploy ${pendingDeployments.length + 1} lookup(s)`
+                                                    : 'Deploys transferred lookup only'
+                                                }
+                                            </p>
 
                                             {/* Info Box */}
                                             <div className={`p-3 rounded-lg mt-3 ${darkMode ? 'bg-blue-900 bg-opacity-30' : 'bg-blue-50'}`}>
