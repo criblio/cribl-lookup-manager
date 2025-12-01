@@ -254,7 +254,7 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 
 ## Changelog
 
-### Version 1.2.0 (December 2025)
+### Version 1.3.0 (December 2025)
 - **Pack Lookup Discovery**: Discover lookups from Cribl Packs in Stream/Edge by exporting and parsing `.crbl` files
 - **Bulk Transfer Support**: Transfer multiple lookups to multiple worker groups/fleets simultaneously
 - **Multi-Selection UI**: Checkbox-based selection for lookups and target groups with Select All/Deselect All

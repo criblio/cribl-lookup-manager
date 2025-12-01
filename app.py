@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Cribl Lookup Manager - Backend Server
-Version: 1.2.0
+Version: 1.3.0
 Date: December 1, 2025
 
-New in v1.2.0:
+New in v1.3.0:
 - Pack lookup discovery for Stream/Edge (exports .crbl files to find pack lookups)
 - Bulk transfer support (multiple lookups to multiple targets)
 - Per-lookup type override for bulk transfers
