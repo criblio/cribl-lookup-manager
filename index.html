@@ -105,6 +105,22 @@
             const [selectedTargetGroups, setSelectedTargetGroups] = useState(new Set()); // Multi-select for bulk transfer to multiple targets
             const [lookups, setLookups] = useState([]);
             const [lookupsLoading, setLookupsLoading] = useState(false);
+            // Pack lookup discovery state
+            const [availablePacks, setAvailablePacks] = useState([]); // List of packs from /api/packs
+            const [selectedPacks, setSelectedPacks] = useState(new Set()); // Packs selected by user
+            const [packLoadingProgress, setPackLoadingProgress] = useState({ current: 0, total: 0, currentPack: '' }); // Progress tracking
+            const [packsLoading, setPacksLoading] = useState(false); // Loading pack list
+            const [packLookupsLoading, setPackLookupsLoading] = useState(false); // Loading lookups from selected packs
+            const [packFilter, setPackFilter] = useState(''); // Filter text for pack list
+            const [packSortOrder, setPackSortOrder] = useState('asc'); // 'asc' or 'desc' for alphabetical sort
+            // Lookup list filter and sort
+            const [lookupFilter, setLookupFilter] = useState('');
+            const [lookupSortOrder, setLookupSortOrder] = useState('asc');
+            // Worker group filter and sort
+            const [sourceGroupFilter, setSourceGroupFilter] = useState('');
+            const [sourceGroupSortOrder, setSourceGroupSortOrder] = useState('asc');
+            const [targetGroupFilter, setTargetGroupFilter] = useState('');
+            const [targetGroupSortOrder, setTargetGroupSortOrder] = useState('asc');
             const [selectedLookup, setSelectedLookup] = useState('');
             const [selectedLookups, setSelectedLookups] = useState(new Set()); // Multi-select for bulk transfer
             const [lookupTypes, setLookupTypes] = useState({}); // Per-lookup type override: { lookupId: 'file' | 'memory' }
@@ -151,6 +167,8 @@
             const [editedLookupName, setEditedLookupName] = useState('');
             const [lookupContent, setLookupContent] = useState('');
             const [isBinaryFile, setIsBinaryFile] = useState(false);
+            const [editorMode, setEditorMode] = useState('text'); // 'text' or 'table'
+            const [tableData, setTableData] = useState({ headers: [], rows: [] }); // Parsed CSV data for table mode
             const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
             const [savedLookupName, setSavedLookupName] = useState('');
             const [savedLookupContent, setSavedLookupContent] = useState('');
@@ -174,6 +192,109 @@
                 const parts = filename.split('.');
                 // If more than 2 parts (pack.name.csv), strip the pack prefix
                 return parts.length > 2 ? parts.slice(1).join('.') : filename;
+            };
+
+            // CSV parsing helper - handles quoted fields, commas in values, etc.
+            const parseCSV = (csvText) => {
+                if (!csvText || !csvText.trim()) return { headers: [], rows: [] };
+
+                const lines = [];
+                let currentLine = '';
+                let inQuotes = false;
+
+                // Split by lines, handling quoted newlines
+                for (let i = 0; i < csvText.length; i++) {
+                    const char = csvText[i];
+                    if (char === '"') {
+                        inQuotes = !inQuotes;
+                        currentLine += char;
+                    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+                        if (currentLine.trim()) lines.push(currentLine);
+                        currentLine = '';
+                        // Skip \r\n as single newline
+                        if (char === '\r' && csvText[i + 1] === '\n') i++;
+                    } else {
+                        currentLine += char;
+                    }
+                }
+                if (currentLine.trim()) lines.push(currentLine);
+
+                if (lines.length === 0) return { headers: [], rows: [] };
+
+                // Parse a single CSV line into fields
+                const parseLine = (line) => {
+                    const fields = [];
+                    let field = '';
+                    let inQuotes = false;
+
+                    for (let i = 0; i < line.length; i++) {
+                        const char = line[i];
+                        if (char === '"') {
+                            if (inQuotes && line[i + 1] === '"') {
+                                field += '"';
+                                i++; // Skip escaped quote
+                            } else {
+                                inQuotes = !inQuotes;
+                            }
+                        } else if (char === ',' && !inQuotes) {
+                            fields.push(field);
+                            field = '';
+                        } else {
+                            field += char;
+                        }
+                    }
+                    fields.push(field);
+                    return fields;
+                };
+
+                const headers = parseLine(lines[0]);
+                const rows = lines.slice(1).map(line => parseLine(line));
+
+                return { headers, rows };
+            };
+
+            // CSV serialization helper - properly escapes and quotes fields
+            const serializeCSV = (headers, rows) => {
+                const escapeField = (field) => {
+                    if (field === null || field === undefined) return '';
+                    const str = String(field);
+                    // Quote if contains comma, quote, or newline
+                    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+                        return '"' + str.replace(/"/g, '""') + '"';
+                    }
+                    return str;
+                };
+
+                const headerLine = headers.map(escapeField).join(',');
+                const dataLines = rows.map(row => row.map(escapeField).join(','));
+                return [headerLine, ...dataLines].join('\n');
+            };
+
+            // Check if content looks like CSV (has consistent column count)
+            const isCSVContent = (content) => {
+                if (!content || !content.trim()) return false;
+                const filename = editedLookupName.toLowerCase();
+                // Check file extension
+                if (filename.endsWith('.csv') || filename.endsWith('.csv.gz')) return true;
+                // Heuristic: check if first few lines have consistent comma count
+                const lines = content.trim().split('\n').slice(0, 5);
+                if (lines.length < 2) return false;
+                const commaCounts = lines.map(l => (l.match(/,/g) || []).length);
+                return commaCounts.every(c => c === commaCounts[0] && c > 0);
+            };
+
+            // Sync table data to text content
+            const syncTableToText = () => {
+                if (tableData.headers.length > 0) {
+                    const newContent = serializeCSV(tableData.headers, tableData.rows);
+                    setLookupContent(newContent);
+                }
+            };
+
+            // Sync text content to table data
+            const syncTextToTable = () => {
+                const parsed = parseCSV(lookupContent);
+                setTableData(parsed);
             };
 
             // Helper to build real Cribl API URL for command history
@@ -369,6 +490,11 @@
                 setSelectedLookup('');
                 setSelectedLookups(new Set());
                 setLookupTypes({});
+                // Reset pack lookup state when API type changes
+                setAvailablePacks([]);
+                setSelectedPacks(new Set());
+                setPackLoadingProgress({ current: 0, total: 0, currentPack: '' });
+                setPackFilter('');
 
                 // Auto-select default_search for Search API, clear for others
                 if (sourceApiType === 'search') {
@@ -668,10 +794,12 @@
                 addConsoleLog(`[INFO] Loading lookups from ${group} (${apiType})...`, 'info');
 
                 try {
-                    // Log API command
-                    addCommandToHistory('GET', `${API_BASE}/api/lookups?api_type=${apiType}&worker_group=${group}`, `List lookups in ${group}`, apiType, group);
+                    const url = `${API_BASE}/api/lookups?worker_group=${group}&api_type=${apiType}`;
 
-                    const res = await fetch(`${API_BASE}/api/lookups?worker_group=${group}&api_type=${apiType}`);
+                    // Log API command
+                    addCommandToHistory('GET', url, `List lookups in ${group}`, apiType, group);
+
+                    const res = await fetch(url);
                     const data = await res.json();
 
                     // Check if this request is still the latest one
@@ -686,8 +814,7 @@
                     const allLookups = data.lookups || [];
                     setLookups(allLookups);
 
-                    // Note: Pack lookups in Stream/Edge are not accessible via Cribl REST API.
-                    // Only Search exposes pack lookups through the /system/lookups endpoint.
+                    // Count pack vs system lookups (for Search which includes them automatically)
                     const packLookupCount = allLookups.filter(l => l.pack).length;
                     const systemLookupCount = allLookups.length - packLookupCount;
 
@@ -695,6 +822,11 @@
                         addConsoleLog(`[OK] Loaded ${systemLookupCount} system + ${packLookupCount} pack lookup files`, 'success');
                     } else {
                         addConsoleLog(`[OK] Loaded ${allLookups.length} lookup files`, 'success');
+                    }
+
+                    // For Stream/Edge, also load the list of available packs
+                    if (apiType !== 'search') {
+                        loadAvailablePacks(apiType, group);
                     }
 
                 } catch (error) {
@@ -705,6 +837,82 @@
                     if (thisRequestId === lookupsRequestId.current) {
                         setLookupsLoading(false);
                     }
+                }
+            };
+
+            // Load list of available packs (fast - doesn't export them)
+            const loadAvailablePacks = async (apiType, group) => {
+                if (!group || apiType === 'search') return;
+
+                setPacksLoading(true);
+                try {
+                    const res = await fetch(`${API_BASE}/api/packs?worker_group=${group}&api_type=${apiType}`);
+                    const data = await res.json();
+
+                    if (data.error) {
+                        console.warn('Failed to load packs:', data.error);
+                        setAvailablePacks([]);
+                        return;
+                    }
+
+                    setAvailablePacks(data.packs || []);
+                    if (data.packs && data.packs.length > 0) {
+                        addConsoleLog(`[INFO] Found ${data.packs.length} pack(s) available for lookup discovery`, 'info');
+                    }
+                } catch (error) {
+                    console.warn('Error loading packs:', error);
+                    setAvailablePacks([]);
+                } finally {
+                    setPacksLoading(false);
+                }
+            };
+
+            // Load lookups from selected packs sequentially with progress
+            const loadSelectedPackLookups = async () => {
+                if (selectedPacks.size === 0) return;
+
+                const group = sourceApiType === 'search' ? 'default_search' : selectedSourceGroup;
+                if (!group) return;
+
+                const packsToLoad = Array.from(selectedPacks);
+                setPackLookupsLoading(true);
+                setPackLoadingProgress({ current: 0, total: packsToLoad.length, currentPack: '' });
+
+                addConsoleLog(`[PACKS] Loading lookups from ${packsToLoad.length} selected pack(s)...`, 'info');
+
+                let newPackLookups = [];
+
+                for (let i = 0; i < packsToLoad.length; i++) {
+                    const packId = packsToLoad[i];
+                    setPackLoadingProgress({ current: i, total: packsToLoad.length, currentPack: packId });
+
+                    try {
+                        const res = await fetch(`${API_BASE}/api/packs/${encodeURIComponent(packId)}/lookups?worker_group=${group}&api_type=${sourceApiType}`);
+                        const data = await res.json();
+
+                        if (data.lookups && data.lookups.length > 0) {
+                            newPackLookups = [...newPackLookups, ...data.lookups];
+                            addConsoleLog(`[OK] Pack "${packId}": ${data.lookups.length} lookup(s)`, 'success');
+                        } else {
+                            addConsoleLog(`[INFO] Pack "${packId}": no lookups found`, 'info');
+                        }
+                    } catch (error) {
+                        addConsoleLog(`[ERROR] Pack "${packId}": ${error.message}`, 'error');
+                    }
+                }
+
+                // Add pack lookups to the existing lookups list (avoiding duplicates)
+                setLookups(prev => {
+                    const existingIds = new Set(prev.map(l => l.id));
+                    const uniqueNewLookups = newPackLookups.filter(l => !existingIds.has(l.id));
+                    return [...prev, ...uniqueNewLookups];
+                });
+
+                setPackLoadingProgress({ current: packsToLoad.length, total: packsToLoad.length, currentPack: '' });
+                setPackLookupsLoading(false);
+
+                if (newPackLookups.length > 0) {
+                    addConsoleLog(`[DONE] Added ${newPackLookups.length} pack lookup(s) to the list`, 'success');
                 }
             };
 
@@ -1328,8 +1536,14 @@
             };
 
             const handleSave = () => {
+                // If in table mode, sync table data to text content first
+                let contentToSave = lookupContent;
+                if (editorMode === 'table' && tableData.headers.length > 0) {
+                    contentToSave = serializeCSV(tableData.headers, tableData.rows);
+                    setLookupContent(contentToSave);
+                }
                 setSavedLookupName(editedLookupName);
-                setSavedLookupContent(lookupContent);
+                setSavedLookupContent(contentToSave);
                 setHasUnsavedChanges(false);
                 addConsoleLog(`[OK] Saved changes to ${editedLookupName}`, 'success');
                 showMessage(`Saved as ${editedLookupName}`, 'success');
@@ -1910,9 +2124,59 @@
                                                 </select>
                                             </div>
 
-                                            {sourceApiType !== 'search' && (
+                                            {sourceApiType !== 'search' && (() => {
+                                                // Filter and sort source groups
+                                                const filteredSourceGroups = sourceGroups
+                                                    .filter(g => {
+                                                        const n = (g.name || g.id).toLowerCase();
+                                                        // Filter out defaults for wrong API types
+                                                        if (sourceApiType !== 'search' && n === 'default_search') return false;
+                                                        if (sourceApiType !== 'edge' && n === 'default_fleet') return false;
+                                                        // Filter out WindowsOS and LinuxOS for Stream
+                                                        if (sourceApiType === 'stream' && (n.includes('windowsos') || n.includes('linuxos'))) return false;
+                                                        // Apply user filter
+                                                        if (sourceGroupFilter && !n.includes(sourceGroupFilter.toLowerCase())) return false;
+                                                        return true;
+                                                    })
+                                                    .sort((a, b) => {
+                                                        const nameA = (a.name || a.id).toLowerCase();
+                                                        const nameB = (b.name || b.id).toLowerCase();
+                                                        return sourceGroupSortOrder === 'asc'
+                                                            ? nameA.localeCompare(nameB)
+                                                            : nameB.localeCompare(nameA);
+                                                    });
+
+                                                return (
                                                 <div>
                                                     <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>{sourceApiType === 'edge' ? 'Fleet' : 'Worker Group'}</label>
+                                                    {/* Filter and Sort controls */}
+                                                    <div className="flex items-center space-x-1 mb-1">
+                                                        <div className="relative flex-1">
+                                                            <i className={`fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                            <input
+                                                                type="text"
+                                                                value={sourceGroupFilter}
+                                                                onChange={(e) => setSourceGroupFilter(e.target.value)}
+                                                                placeholder={`Filter ${sourceApiType === 'edge' ? 'fleets' : 'groups'}...`}
+                                                                className={`w-full pl-6 pr-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border focus:ring-1 focus:ring-blue-500 focus:outline-none`}
+                                                            />
+                                                            {sourceGroupFilter && (
+                                                                <button
+                                                                    onClick={() => setSourceGroupFilter('')}
+                                                                    className={`absolute right-1 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                                                                >
+                                                                    <i className="fas fa-times text-xs"></i>
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setSourceGroupSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                                            className={`px-1.5 py-1 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}
+                                                            title={`Sort ${sourceGroupSortOrder === 'asc' ? 'Z-A' : 'A-Z'}`}
+                                                        >
+                                                            <i className={`fas fa-sort-alpha-${sourceGroupSortOrder === 'asc' ? 'down' : 'up'}`}></i>
+                                                        </button>
+                                                    </div>
                                                     <select value={selectedSourceGroup} onChange={(e) => {
                                                         setSelectedSourceGroup(e.target.value);
                                                         // Reset deploy state when source group changes
@@ -1920,18 +2184,16 @@
                                                         setDeploymentComplete(false);
                                                     }} className={`w-full px-3 py-2 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-blue-500 focus:outline-none`}>
                                                         <option value="">Select...</option>
-                                                        {sourceGroups.filter(g => {
-                                                            const n=(g.name||g.id).toLowerCase();
-                                                            // Filter out defaults for wrong API types
-                                                            if (sourceApiType!=='search'&&n==='default_search') return false;
-                                                            if (sourceApiType!=='edge'&&n==='default_fleet') return false;
-                                                            // Filter out WindowsOS and LinuxOS for Stream
-                                                            if (sourceApiType==='stream'&&(n.includes('windowsos')||n.includes('linuxos'))) return false;
-                                                            return true;
-                                                        }).map(g => (<option key={g.id} value={g.id}>{g.name}</option>))}
+                                                        {filteredSourceGroups.map(g => (<option key={g.id} value={g.id}>{g.name}</option>))}
                                                     </select>
+                                                    {sourceGroupFilter && filteredSourceGroups.length === 0 && (
+                                                        <p className={`text-xs ${textSecondaryClass} mt-1`}>
+                                                            <i className="fas fa-search mr-1"></i>No matches for "{sourceGroupFilter}"
+                                                        </p>
+                                                    )}
                                                 </div>
-                                            )}
+                                                );
+                                            })()}
 
                                             {sourceApiType === 'search' && (
                                                 <div className={`p-2 text-xs rounded-lg ${darkMode ? 'bg-blue-900 bg-opacity-20 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
@@ -1961,17 +2223,223 @@
                                                         <p className={`text-xs ${textSecondaryClass}`}>Loading lookups...</p>
                                                     </div>
                                                 )}
-                                                {/* Pack lookup warning for Stream/Edge */}
-                                                {!lookupsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && (
-                                                    <div className={`p-2 mb-2 text-xs rounded-lg ${darkMode ? 'bg-amber-900 bg-opacity-30 text-amber-300' : 'bg-amber-50 text-amber-700'}`}>
-                                                        <i className="fas fa-exclamation-triangle mr-1"></i>
-                                                        Pack lookups are not available via the Cribl Cloud API for {sourceApiType === 'stream' ? 'Stream' : 'Edge'}. Only system lookups are shown.
+                                                {/* Pack lookup discovery for Stream/Edge */}
+                                                {!lookupsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && availablePacks.length > 0 && (() => {
+                                                    // Filter and sort packs
+                                                    const filteredPacks = availablePacks
+                                                        .filter(pack => {
+                                                            if (!packFilter) return true;
+                                                            const searchTerm = packFilter.toLowerCase();
+                                                            return (pack.displayName || pack.id).toLowerCase().includes(searchTerm) ||
+                                                                   pack.id.toLowerCase().includes(searchTerm) ||
+                                                                   (pack.description || '').toLowerCase().includes(searchTerm);
+                                                        })
+                                                        .sort((a, b) => {
+                                                            const nameA = (a.displayName || a.id).toLowerCase();
+                                                            const nameB = (b.displayName || b.id).toLowerCase();
+                                                            return packSortOrder === 'asc'
+                                                                ? nameA.localeCompare(nameB)
+                                                                : nameB.localeCompare(nameA);
+                                                        });
+
+                                                    return (
+                                                    <div className={`p-2 mb-2 text-xs rounded-lg ${darkMode ? 'bg-purple-900 bg-opacity-30 border border-purple-800' : 'bg-purple-50 border border-purple-200'}`}>
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <div className={`font-semibold ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                                                                <i className="fas fa-cube mr-1"></i>
+                                                                Pack Lookups ({availablePacks.length} pack{availablePacks.length !== 1 ? 's' : ''} available)
+                                                            </div>
+                                                            <div className="flex space-x-1">
+                                                                <button
+                                                                    onClick={() => setSelectedPacks(new Set(filteredPacks.map(p => p.id)))}
+                                                                    className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-purple-800 hover:bg-purple-700 text-purple-200' : 'bg-purple-200 hover:bg-purple-300 text-purple-700'}`}
+                                                                    title="Select all visible packs"
+                                                                >All</button>
+                                                                <button
+                                                                    onClick={() => setSelectedPacks(new Set())}
+                                                                    className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-purple-800 hover:bg-purple-700 text-purple-200' : 'bg-purple-200 hover:bg-purple-300 text-purple-700'}`}
+                                                                >None</button>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Filter and Sort controls */}
+                                                        <div className="flex items-center space-x-2 mb-2">
+                                                            <div className="relative flex-1">
+                                                                <i className={`fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                                <input
+                                                                    type="text"
+                                                                    value={packFilter}
+                                                                    onChange={(e) => setPackFilter(e.target.value)}
+                                                                    placeholder="Filter packs..."
+                                                                    className={`w-full pl-7 pr-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border focus:ring-1 focus:ring-purple-500 focus:outline-none`}
+                                                                />
+                                                                {packFilter && (
+                                                                    <button
+                                                                        onClick={() => setPackFilter('')}
+                                                                        className={`absolute right-2 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                                                                    >
+                                                                        <i className="fas fa-times"></i>
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                            <button
+                                                                onClick={() => setPackSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                                                className={`px-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}
+                                                                title={`Sort ${packSortOrder === 'asc' ? 'Z-A' : 'A-Z'}`}
+                                                            >
+                                                                <i className={`fas fa-sort-alpha-${packSortOrder === 'asc' ? 'down' : 'up'}`}></i>
+                                                            </button>
+                                                        </div>
+
+                                                        {/* Pack checkboxes */}
+                                                        <div className={`max-h-24 overflow-y-auto mb-2 rounded ${darkMode ? 'bg-gray-800' : 'bg-white'} p-1`}>
+                                                            {filteredPacks.length === 0 ? (
+                                                                <div className={`text-center py-2 ${textSecondaryClass}`}>
+                                                                    <i className="fas fa-search mr-1"></i>
+                                                                    No packs match "{packFilter}"
+                                                                </div>
+                                                            ) : (
+                                                                filteredPacks.map(pack => (
+                                                                    <label key={pack.id} className={`flex items-center px-1.5 py-1 cursor-pointer rounded hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={selectedPacks.has(pack.id)}
+                                                                            onChange={() => {
+                                                                                setSelectedPacks(prev => {
+                                                                                    const newSet = new Set(prev);
+                                                                                    if (newSet.has(pack.id)) {
+                                                                                        newSet.delete(pack.id);
+                                                                                    } else {
+                                                                                        newSet.add(pack.id);
+                                                                                    }
+                                                                                    return newSet;
+                                                                                });
+                                                                            }}
+                                                                            className="mr-2 rounded"
+                                                                            disabled={packLookupsLoading}
+                                                                        />
+                                                                        <span className={`flex-1 truncate ${textClass}`} title={pack.description || pack.id}>
+                                                                            {pack.displayName || pack.id}
+                                                                        </span>
+                                                                        {pack.version && (
+                                                                            <span className={`text-xs ${textSecondaryClass} ml-1`}>v{pack.version}</span>
+                                                                        )}
+                                                                    </label>
+                                                                ))
+                                                            )}
+                                                        </div>
+
+                                                        {/* Progress bar (shown during loading) */}
+                                                        {packLookupsLoading && packLoadingProgress.total > 0 && (
+                                                            <div className="mb-2">
+                                                                <div className="flex items-center justify-between mb-1">
+                                                                    <span className={`text-xs ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                                                                        <i className="fas fa-spinner fa-spin mr-1"></i>
+                                                                        Exporting: {packLoadingProgress.currentPack}
+                                                                    </span>
+                                                                    <span className={`text-xs ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                                                                        {packLoadingProgress.current + 1}/{packLoadingProgress.total}
+                                                                    </span>
+                                                                </div>
+                                                                <div className={`w-full h-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                                                                    <div
+                                                                        className="h-2 rounded-full bg-purple-500 transition-all duration-300"
+                                                                        style={{ width: `${((packLoadingProgress.current + 1) / packLoadingProgress.total) * 100}%` }}
+                                                                    ></div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Load button */}
+                                                        <button
+                                                            onClick={loadSelectedPackLookups}
+                                                            disabled={packLookupsLoading || selectedPacks.size === 0}
+                                                            className={`w-full px-2 py-1.5 text-xs rounded-lg font-semibold transition-all ${
+                                                                packLookupsLoading || selectedPacks.size === 0
+                                                                    ? 'bg-gray-400 cursor-not-allowed opacity-50 text-white'
+                                                                    : darkMode
+                                                                        ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                                                                        : 'bg-purple-500 hover:bg-purple-600 text-white'
+                                                            }`}
+                                                        >
+                                                            {packLookupsLoading ? (
+                                                                <><i className="fas fa-spinner fa-spin mr-1"></i>Loading Pack Lookups...</>
+                                                            ) : (
+                                                                <><i className="fas fa-download mr-1"></i>Load Lookups from {selectedPacks.size} Pack{selectedPacks.size !== 1 ? 's' : ''}</>
+                                                            )}
+                                                        </button>
+
+                                                        <p className={`mt-1.5 text-xs ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                                                            <i className="fas fa-info-circle mr-1"></i>
+                                                            Exports .crbl files to discover lookups (may take a moment for large packs)
+                                                        </p>
+                                                    </div>
+                                                    );
+                                                })()}
+
+                                                {/* No packs available message */}
+                                                {!lookupsLoading && !packsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && availablePacks.length === 0 && selectedSourceGroup && (
+                                                    <div className={`p-2 mb-2 text-xs rounded-lg ${darkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-600'}`}>
+                                                        <i className="fas fa-cube mr-1"></i>
+                                                        No packs installed in this worker group
                                                     </div>
                                                 )}
                                                 {/* Source lookup list with read-only type badges */}
-                                                {lookups.length > 0 && (
+                                                {lookups.length > 0 && (() => {
+                                                    // Filter and sort lookups
+                                                    const filteredLookups = lookups
+                                                        .filter(l => {
+                                                            if (!lookupFilter) return true;
+                                                            return l.id.toLowerCase().includes(lookupFilter.toLowerCase());
+                                                        })
+                                                        .sort((a, b) => {
+                                                            const nameA = a.id.toLowerCase();
+                                                            const nameB = b.id.toLowerCase();
+                                                            return lookupSortOrder === 'asc'
+                                                                ? nameA.localeCompare(nameB)
+                                                                : nameB.localeCompare(nameA);
+                                                        });
+
+                                                    return (
+                                                    <>
+                                                    {/* Filter and Sort controls for lookups */}
+                                                    <div className="flex items-center space-x-2 mb-2">
+                                                        <div className="relative flex-1">
+                                                            <i className={`fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                            <input
+                                                                type="text"
+                                                                value={lookupFilter}
+                                                                onChange={(e) => setLookupFilter(e.target.value)}
+                                                                placeholder="Filter lookups..."
+                                                                className={`w-full pl-7 pr-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border focus:ring-1 focus:ring-blue-500 focus:outline-none`}
+                                                            />
+                                                            {lookupFilter && (
+                                                                <button
+                                                                    onClick={() => setLookupFilter('')}
+                                                                    className={`absolute right-2 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                                                                >
+                                                                    <i className="fas fa-times"></i>
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setLookupSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                                            className={`px-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}
+                                                            title={`Sort ${lookupSortOrder === 'asc' ? 'Z-A' : 'A-Z'}`}
+                                                        >
+                                                            <i className={`fas fa-sort-alpha-${lookupSortOrder === 'asc' ? 'down' : 'up'}`}></i>
+                                                        </button>
+                                                    </div>
+                                                    {filteredLookups.length === 0 ? (
+                                                        <div className={`p-4 text-center border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
+                                                            <p className={`text-xs ${textSecondaryClass}`}>
+                                                                <i className="fas fa-search mr-1"></i>
+                                                                No lookups match "{lookupFilter}"
+                                                            </p>
+                                                        </div>
+                                                    ) : (
                                                     <div className={`max-h-80 overflow-y-auto border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
-                                                        {lookups.map(l => (
+                                                        {filteredLookups.map(l => (
                                                             <div key={l.id} className={`flex items-center px-2 py-1.5 text-xs ${selectedLookups.has(l.id) ? (darkMode ? 'bg-blue-900 bg-opacity-30' : 'bg-blue-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                                                 <input
                                                                     type="checkbox"
@@ -1995,17 +2463,23 @@
                                                                         setDeploymentComplete(false);
                                                                     }
                                                                 }}>{l.id}</span>
-                                                                <span className={`text-xs ${textSecondaryClass} mx-1`}>({(l.size/1024).toFixed(1)}KB)</span>
-                                                                <span className={`px-1.5 py-0.5 text-xs rounded ${l.inMemory ? (darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-700') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-600')}`}>
-                                                                    <i className={`fas ${l.inMemory ? 'fa-bolt' : 'fa-hdd'} mr-1`}></i>
-                                                                    {l.inMemory ? 'Mem' : 'Disk'}
-                                                                </span>
-                                                                {l.pack && (
-                                                                    <span className={`px-1.5 py-0.5 text-xs rounded ml-1 ${darkMode ? 'bg-purple-900 text-purple-300' : 'bg-purple-100 text-purple-700'}`} title={`From pack: ${l.pack}`}>
-                                                                        <i className="fas fa-cube mr-1"></i>
-                                                                        Pack
+                                                                {/* Fixed-width badge area for alignment */}
+                                                                <div className="flex items-center justify-end" style={{ minWidth: '165px' }}>
+                                                                    <span className={`text-xs ${textSecondaryClass} mr-1.5`}>({(l.size/1024).toFixed(1)}KB)</span>
+                                                                    <span className={`px-1.5 py-0.5 text-xs rounded w-12 text-center ${l.inMemory ? (darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-700') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-600')}`}>
+                                                                        <i className={`fas ${l.inMemory ? 'fa-bolt' : 'fa-hdd'} mr-1`}></i>
+                                                                        {l.inMemory ? 'Mem' : 'Disk'}
                                                                     </span>
-                                                                )}
+                                                                    {/* Pack badge - fixed width slot */}
+                                                                    <div className="w-14 ml-1">
+                                                                        {l.pack && (
+                                                                            <span className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-purple-900 text-purple-300' : 'bg-purple-100 text-purple-700'}`} title={`From pack: ${l.pack}`}>
+                                                                                <i className="fas fa-cube mr-1"></i>
+                                                                                Pack
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
                                                                 <button
                                                                     onClick={async (e) => {
                                                                         e.stopPropagation();
@@ -2044,7 +2518,10 @@
                                                             </div>
                                                         ))}
                                                     </div>
-                                                )}
+                                                    )}
+                                                    </>
+                                                    );
+                                                })()}
                                                 {selectedLookups.size > 0 && (
                                                     <p className={`text-xs ${darkMode ? 'text-blue-400' : 'text-blue-600'} mt-1`}>
                                                         <i className="fas fa-check-circle mr-1"></i>{selectedLookups.size} selected
@@ -2121,26 +2598,75 @@
                                                 </div>
                                             )}
 
-                                            {targetApiType !== 'search' && (
+                                            {targetApiType !== 'search' && (() => {
+                                                // Filter and sort target groups
+                                                const filteredTargetGroups = targetGroups
+                                                    .filter(g => {
+                                                        const n = (g.name || g.id).toLowerCase();
+                                                        if (targetApiType !== 'search' && n === 'default_search') return false;
+                                                        if (targetApiType !== 'edge' && n === 'default_fleet') return false;
+                                                        if (targetApiType === 'stream' && (n.includes('windowsos') || n.includes('linuxos'))) return false;
+                                                        // Apply user filter
+                                                        if (targetGroupFilter && !n.includes(targetGroupFilter.toLowerCase())) return false;
+                                                        return true;
+                                                    })
+                                                    .sort((a, b) => {
+                                                        const nameA = (a.name || a.id).toLowerCase();
+                                                        const nameB = (b.name || b.id).toLowerCase();
+                                                        return targetGroupSortOrder === 'asc'
+                                                            ? nameA.localeCompare(nameB)
+                                                            : nameB.localeCompare(nameA);
+                                                    });
+
+                                                return (
                                                 <div>
                                                     <div className="flex items-center justify-between mb-1">
                                                         <label className={`block text-xs font-medium ${textSecondaryClass}`}>{targetApiType === 'edge' ? 'Fleets' : 'Worker Groups'}</label>
                                                         {targetGroups.length > 0 && (
                                                             <div className="flex space-x-1">
-                                                                <button onClick={selectAllTargetGroups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>All</button>
+                                                                <button onClick={() => setSelectedTargetGroups(new Set(filteredTargetGroups.map(g => g.id)))} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`} title="Select all visible">All</button>
                                                                 <button onClick={deselectAllTargetGroups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>None</button>
                                                             </div>
                                                         )}
                                                     </div>
+                                                    {/* Filter and Sort controls */}
+                                                    <div className="flex items-center space-x-1 mb-1">
+                                                        <div className="relative flex-1">
+                                                            <i className={`fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                            <input
+                                                                type="text"
+                                                                value={targetGroupFilter}
+                                                                onChange={(e) => setTargetGroupFilter(e.target.value)}
+                                                                placeholder={`Filter ${targetApiType === 'edge' ? 'fleets' : 'groups'}...`}
+                                                                className={`w-full pl-6 pr-2 py-1 text-xs rounded ${darkMode ? 'bg-gray-800 border-gray-600 text-white placeholder-gray-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border focus:ring-1 focus:ring-purple-500 focus:outline-none`}
+                                                            />
+                                                            {targetGroupFilter && (
+                                                                <button
+                                                                    onClick={() => setTargetGroupFilter('')}
+                                                                    className={`absolute right-1 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                                                                >
+                                                                    <i className="fas fa-times text-xs"></i>
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setTargetGroupSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                                            className={`px-1.5 py-1 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}
+                                                            title={`Sort ${targetGroupSortOrder === 'asc' ? 'Z-A' : 'A-Z'}`}
+                                                        >
+                                                            <i className={`fas fa-sort-alpha-${targetGroupSortOrder === 'asc' ? 'down' : 'up'}`}></i>
+                                                        </button>
+                                                    </div>
                                                     {/* Multi-select checkbox list for target groups */}
+                                                    {filteredTargetGroups.length === 0 ? (
+                                                        <div className={`p-2 text-center border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
+                                                            <p className={`text-xs ${textSecondaryClass}`}>
+                                                                <i className="fas fa-search mr-1"></i>No matches for "{targetGroupFilter}"
+                                                            </p>
+                                                        </div>
+                                                    ) : (
                                                     <div className={`max-h-32 overflow-y-auto border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
-                                                        {targetGroups.filter(g => {
-                                                            const n=(g.name||g.id).toLowerCase();
-                                                            if (targetApiType!=='search'&&n==='default_search') return false;
-                                                            if (targetApiType!=='edge'&&n==='default_fleet') return false;
-                                                            if (targetApiType==='stream'&&(n.includes('windowsos')||n.includes('linuxos'))) return false;
-                                                            return true;
-                                                        }).map(g => (
+                                                        {filteredTargetGroups.map(g => (
                                                             <div key={g.id} className={`flex items-center px-2 py-1.5 text-xs ${selectedTargetGroups.has(g.id) ? (darkMode ? 'bg-purple-900 bg-opacity-30' : 'bg-purple-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                                                 <input
                                                                     type="checkbox"
@@ -2152,13 +2678,15 @@
                                                             </div>
                                                         ))}
                                                     </div>
+                                                    )}
                                                     {selectedTargetGroups.size > 0 && (
                                                         <p className={`text-xs ${darkMode ? 'text-purple-400' : 'text-purple-600'} mt-1`}>
                                                             <i className="fas fa-check-circle mr-1"></i>{selectedTargetGroups.size} target(s) selected
                                                         </p>
                                                     )}
                                                 </div>
-                                            )}
+                                                );
+                                            })()}
 
                                             {targetApiType === 'search' && (
                                                 <div className={`p-2 text-xs rounded-lg ${darkMode ? 'bg-purple-900 bg-opacity-20 text-purple-300' : 'bg-purple-50 text-purple-700'}`}>
@@ -2325,6 +2853,45 @@
                                         <div className="flex items-center space-x-2">
                                             {!lookupEditorMinimized && lookupEditorOpen && (lookupContent || uploadedFileName) && (
                                                 <>
+                                                    {/* Text/Table toggle - only show for CSV files */}
+                                                    {!isBinaryFile && isCSVContent(lookupContent) && (
+                                                        <div className={`flex rounded-lg overflow-hidden border ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+                                                            <button
+                                                                onClick={() => {
+                                                                    if (editorMode === 'table') {
+                                                                        // Switching from table to text - sync first
+                                                                        syncTableToText();
+                                                                    }
+                                                                    setEditorMode('text');
+                                                                }}
+                                                                className={`px-2 py-1 text-xs font-semibold transition-all ${
+                                                                    editorMode === 'text'
+                                                                        ? (darkMode ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white')
+                                                                        : (darkMode ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')
+                                                                }`}
+                                                                title="Text Editor"
+                                                            >
+                                                                <i className="fas fa-code mr-1"></i>Text
+                                                            </button>
+                                                            <button
+                                                                onClick={() => {
+                                                                    if (editorMode === 'text') {
+                                                                        // Switching from text to table - parse CSV
+                                                                        syncTextToTable();
+                                                                    }
+                                                                    setEditorMode('table');
+                                                                }}
+                                                                className={`px-2 py-1 text-xs font-semibold transition-all ${
+                                                                    editorMode === 'table'
+                                                                        ? (darkMode ? 'bg-blue-600 text-white' : 'bg-blue-500 text-white')
+                                                                        : (darkMode ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')
+                                                                }`}
+                                                                title="Table Editor"
+                                                            >
+                                                                <i className="fas fa-table mr-1"></i>Table
+                                                            </button>
+                                                        </div>
+                                                    )}
                                                     <button
                                                         onClick={() => {
                                                             if (uploadedFileName) {
@@ -2359,6 +2926,8 @@
                                                             setSavedLookupName('');
                                                             setHasUnsavedChanges(false);
                                                             setIsBinaryFile(false);
+                                                            setEditorMode('text');
+                                                            setTableData({ headers: [], rows: [] });
                                                         }}
                                                         className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'} ${textClass} transition-all`}
                                                     >
@@ -2444,11 +3013,7 @@
                                                             Paste from Clipboard
                                                         </button>
                                                     </div>
-                                                    <div className={`text-xs ${textSecondaryClass} italic`}>
-                                                        <i className="fas fa-info-circle mr-1"></i>
-                                                        Supports: CSV, TXT, JSON
-                                                    </div>
-                                                </div>
+                                                                                                    </div>
                                             </div>
                                         </>
                                     ) : (
@@ -2494,19 +3059,56 @@
                                                 <div className="mb-3">
                                                     <div className="flex items-center justify-between mb-2">
                                                         <label className={`text-sm font-medium ${textClass}`}>
-                                                            <i className="fas fa-file-code mr-2"></i>
+                                                            <i className={`fas ${editorMode === 'table' ? 'fa-table' : 'fa-file-code'} mr-2`}></i>
                                                             Content ({lookupContent.split('\n').length} lines, {lookupContent.length} chars)
+                                                            {editorMode === 'table' && tableData.headers.length > 0 && (
+                                                                <span className={`ml-2 ${textSecondaryClass}`}>| {tableData.headers.length} cols, {tableData.rows.length} rows</span>
+                                                            )}
                                                         </label>
                                                         <div className="flex items-center space-x-2">
+                                                            {editorMode === 'table' && tableData.headers.length > 0 && (
+                                                                <>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            const newRow = tableData.headers.map(() => '');
+                                                                            setTableData(prev => ({ ...prev, rows: [...prev.rows, newRow] }));
+                                                                            setHasUnsavedChanges(true);
+                                                                        }}
+                                                                        className={`px-2 py-1 text-xs rounded-lg font-semibold ${darkMode ? 'bg-green-700 hover:bg-green-600' : 'bg-green-500 hover:bg-green-600'} text-white transition-all`}
+                                                                        title="Add new row"
+                                                                    >
+                                                                        <i className="fas fa-plus mr-1"></i>Row
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            const colName = prompt('Enter column name:');
+                                                                            if (colName) {
+                                                                                setTableData(prev => ({
+                                                                                    headers: [...prev.headers, colName],
+                                                                                    rows: prev.rows.map(row => [...row, ''])
+                                                                                }));
+                                                                                setHasUnsavedChanges(true);
+                                                                            }
+                                                                        }}
+                                                                        className={`px-2 py-1 text-xs rounded-lg font-semibold ${darkMode ? 'bg-blue-700 hover:bg-blue-600' : 'bg-blue-500 hover:bg-blue-600'} text-white transition-all`}
+                                                                        title="Add new column"
+                                                                    >
+                                                                        <i className="fas fa-plus mr-1"></i>Col
+                                                                    </button>
+                                                                </>
+                                                            )}
                                                             <button
                                                                 onClick={() => {
-                                                                    navigator.clipboard.writeText(lookupContent).then(() => {
+                                                                    const content = editorMode === 'table' && tableData.headers.length > 0
+                                                                        ? serializeCSV(tableData.headers, tableData.rows)
+                                                                        : lookupContent;
+                                                                    navigator.clipboard.writeText(content).then(() => {
                                                                         showMessage('Copied to clipboard', 'success');
                                                                     }).catch(() => {
                                                                         showMessage('Failed to copy', 'error');
                                                                     });
                                                                 }}
-                                                                disabled={!lookupContent}
+                                                                disabled={!lookupContent && tableData.headers.length === 0}
                                                                 className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-blue-700 hover:bg-blue-600' : 'bg-blue-500 hover:bg-blue-600'} text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
                                                                 title="Copy content to clipboard"
                                                             >
@@ -2517,6 +3119,9 @@
                                                                     try {
                                                                         const text = await navigator.clipboard.readText();
                                                                         setLookupContent(text);
+                                                                        if (editorMode === 'table') {
+                                                                            setTableData(parseCSV(text));
+                                                                        }
                                                                         showMessage('Pasted from clipboard', 'success');
                                                                     } catch (error) {
                                                                         showMessage('Failed to paste - try Ctrl+V in the text area', 'error');
@@ -2529,14 +3134,147 @@
                                                             </button>
                                                         </div>
                                                     </div>
-                                                    <textarea
-                                                        value={lookupContent}
-                                                        onChange={(e) => setLookupContent(e.target.value)}
-                                                        className={`w-full px-4 py-3 rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all font-mono text-xs`}
-                                                        rows="20"
-                                                        placeholder="Lookup file content will appear here..."
-                                                        spellCheck="false"
-                                                    />
+
+                                                    {/* Text Editor Mode */}
+                                                    {editorMode === 'text' && (
+                                                        <textarea
+                                                            value={lookupContent}
+                                                            onChange={(e) => setLookupContent(e.target.value)}
+                                                            className={`w-full px-4 py-3 rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all font-mono text-xs`}
+                                                            rows="20"
+                                                            placeholder="Lookup file content will appear here..."
+                                                            spellCheck="false"
+                                                        />
+                                                    )}
+
+                                                    {/* Table Editor Mode */}
+                                                    {editorMode === 'table' && (
+                                                        <div className={`border rounded-lg overflow-hidden ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+                                                            {tableData.headers.length === 0 ? (
+                                                                <div className={`p-8 text-center ${textSecondaryClass}`}>
+                                                                    <i className="fas fa-table text-3xl mb-2 opacity-50"></i>
+                                                                    <p>No CSV data to display. Switch to Text mode to add content.</p>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="overflow-auto max-h-96">
+                                                                    <table className="w-full text-xs">
+                                                                        <thead className={`sticky top-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                                                            <tr>
+                                                                                <th className={`px-2 py-2 text-left font-semibold ${textSecondaryClass} border-b ${darkMode ? 'border-gray-600' : 'border-gray-300'} w-10`}>#</th>
+                                                                                {tableData.headers.map((header, colIdx) => (
+                                                                                    <th key={colIdx} className={`px-2 py-2 text-left font-semibold ${textClass} border-b ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+                                                                                        <div className="flex items-center space-x-1">
+                                                                                            <input
+                                                                                                type="text"
+                                                                                                value={header}
+                                                                                                onChange={(e) => {
+                                                                                                    const newHeaders = [...tableData.headers];
+                                                                                                    newHeaders[colIdx] = e.target.value;
+                                                                                                    setTableData(prev => ({ ...prev, headers: newHeaders }));
+                                                                                                    setHasUnsavedChanges(true);
+                                                                                                }}
+                                                                                                className={`flex-1 px-1 py-0.5 text-xs font-semibold rounded border-0 bg-transparent focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass}`}
+                                                                                                style={{ minWidth: '60px' }}
+                                                                                            />
+                                                                                            <button
+                                                                                                onClick={() => {
+                                                                                                    if (confirm(`Delete column "${header}"?`)) {
+                                                                                                        setTableData(prev => ({
+                                                                                                            headers: prev.headers.filter((_, i) => i !== colIdx),
+                                                                                                            rows: prev.rows.map(row => row.filter((_, i) => i !== colIdx))
+                                                                                                        }));
+                                                                                                        setHasUnsavedChanges(true);
+                                                                                                    }
+                                                                                                }}
+                                                                                                className="opacity-40 hover:opacity-100 text-red-500"
+                                                                                                title="Delete column"
+                                                                                            >
+                                                                                                <i className="fas fa-times text-xs"></i>
+                                                                                            </button>
+                                                                                        </div>
+                                                                                    </th>
+                                                                                ))}
+                                                                                <th className={`px-2 py-2 w-10 border-b ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}></th>
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {tableData.rows.map((row, rowIdx) => (
+                                                                                <tr key={rowIdx} className={`${darkMode ? 'hover:bg-gray-750' : 'hover:bg-gray-50'}`}>
+                                                                                    <td className={`px-2 py-1 ${textSecondaryClass} border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} text-center font-mono`}>
+                                                                                        {rowIdx + 1}
+                                                                                    </td>
+                                                                                    {row.map((cell, colIdx) => (
+                                                                                        <td key={colIdx} className={`px-1 py-0.5 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                                                                                            <input
+                                                                                                type="text"
+                                                                                                value={cell}
+                                                                                                onChange={(e) => {
+                                                                                                    const newRows = tableData.rows.map((r, ri) =>
+                                                                                                        ri === rowIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
+                                                                                                    );
+                                                                                                    setTableData(prev => ({ ...prev, rows: newRows }));
+                                                                                                    setHasUnsavedChanges(true);
+                                                                                                }}
+                                                                                                className={`w-full px-1 py-0.5 text-xs rounded border-0 ${darkMode ? 'bg-gray-800' : 'bg-white'} focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass} font-mono`}
+                                                                                                style={{ minWidth: '60px' }}
+                                                                                            />
+                                                                                        </td>
+                                                                                    ))}
+                                                                                    <td className={`px-2 py-1 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} text-center`}>
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                setTableData(prev => ({
+                                                                                                    ...prev,
+                                                                                                    rows: prev.rows.filter((_, i) => i !== rowIdx)
+                                                                                                }));
+                                                                                                setHasUnsavedChanges(true);
+                                                                                            }}
+                                                                                            className="opacity-40 hover:opacity-100 text-red-500"
+                                                                                            title="Delete row"
+                                                                                        >
+                                                                                            <i className="fas fa-trash text-xs"></i>
+                                                                                        </button>
+                                                                                    </td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            )}
+                                                            {/* Add Row/Column buttons */}
+                                                            <div className={`flex items-center space-x-2 mt-3 pt-3 border-t ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const newRow = tableData.headers.map(() => '');
+                                                                        setTableData(prev => ({
+                                                                            ...prev,
+                                                                            rows: [...prev.rows, newRow]
+                                                                        }));
+                                                                        setHasUnsavedChanges(true);
+                                                                    }}
+                                                                    className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-blue-700 hover:bg-blue-600' : 'bg-blue-500 hover:bg-blue-600'} text-white transition-all`}
+                                                                >
+                                                                    <i className="fas fa-plus mr-1"></i>Add Row
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const newColName = `column${tableData.headers.length + 1}`;
+                                                                        setTableData(prev => ({
+                                                                            headers: [...prev.headers, newColName],
+                                                                            rows: prev.rows.map(row => [...row, ''])
+                                                                        }));
+                                                                        setHasUnsavedChanges(true);
+                                                                    }}
+                                                                    className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-green-700 hover:bg-green-600' : 'bg-green-500 hover:bg-green-600'} text-white transition-all`}
+                                                                >
+                                                                    <i className="fas fa-columns mr-1"></i>Add Column
+                                                                </button>
+                                                                <span className={`text-xs ${textSecondaryClass} ml-auto`}>
+                                                                    {tableData.rows.length} rows × {tableData.headers.length} columns
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             )}
                                         </>
@@ -2901,7 +3639,7 @@
                                             </div>
                                             <div>
                                                 <span className="font-semibold">Lookup Editor</span>
-                                                <span className={`${textSecondaryClass}`}> — Click the <i className="fas fa-edit"></i> icon on any source file to edit content or rename before transferring. Supports CSV, TXT, JSON files.</span>
+                                                <span className={`${textSecondaryClass}`}> — Click the <i className="fas fa-edit"></i> icon on any source file to edit content or rename before transferring.</span>
                                             </div>
                                         </div>
                                     </div>

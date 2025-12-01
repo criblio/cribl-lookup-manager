@@ -14,12 +14,19 @@ A web-based tool for managing and transferring lookup tables between Cribl Cloud
 - **Auto-Commit**: Automatically commits disk-based lookups to prevent hanging changes
 - **Real-time Status**: View pending changes, current versions, and deployment status
 
-### Bulk Transfer (New!)
+### Bulk Transfer
 - **Multi-Lookup Selection**: Select multiple lookup files to transfer at once using checkboxes
 - **Multi-Target Selection**: Transfer to multiple worker groups or fleets simultaneously
 - **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
 - **Bulk Transfer Progress**: Real-time progress indicator showing current operation count and target
 - **Select All / Deselect All**: Quick selection controls for both lookups and target groups
+
+### Pack Lookup Discovery (New!)
+- **Stream/Edge Pack Lookups**: Discover lookups from installed Cribl Packs in Stream and Edge
+- **Selective Pack Loading**: Choose which packs to load lookups from (no need to export all packs)
+- **Progress Tracking**: Horizontal progress bar shows which pack is being exported
+- **Pack Indicator**: Visual badge showing which lookups come from packs
+- **Fast Initial Load**: System lookups load instantly; pack lookups load on-demand
 
 ### User Interface
 - **Dark/Light Mode**: Toggle between dark and light themes
@@ -248,6 +255,7 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 ## Changelog
 
 ### Version 1.2.0 (December 2025)
+- **Pack Lookup Discovery**: Discover lookups from Cribl Packs in Stream/Edge by exporting and parsing `.crbl` files
 - **Bulk Transfer Support**: Transfer multiple lookups to multiple worker groups/fleets simultaneously
 - **Multi-Selection UI**: Checkbox-based selection for lookups and target groups with Select All/Deselect All
 - **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers

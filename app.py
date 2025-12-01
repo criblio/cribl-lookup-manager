@@ -5,6 +5,7 @@ Version: 1.2.0
 Date: December 1, 2025
 
 New in v1.2.0:
+- Pack lookup discovery for Stream/Edge (exports .crbl files to find pack lookups)
 - Bulk transfer support (multiple lookups to multiple targets)
 - Per-lookup type override for bulk transfers
 - Binary file support (.mmdb, .gz)
@@ -80,6 +81,8 @@ import json
 from pathlib import Path
 import configparser
 import gzip
+import tarfile
+import io
 import tempfile
 from datetime import datetime
 import re
@@ -949,7 +952,16 @@ def get_worker_groups():
 
 @app.route('/api/lookups', methods=['GET'])
 def get_lookups():
-    """Get list of lookup files in a worker group, including pack lookups"""
+    """Get list of lookup files in a worker group.
+
+    Query params:
+    - worker_group: Required. The worker group/fleet to query.
+    - api_type: 'stream', 'edge', or 'search'. Default: 'stream'
+
+    Note: For Stream/Edge, pack lookups are not included here. Use the
+    /api/packs endpoint to list packs, then /api/packs/<pack_id>/lookups
+    to get lookups from specific packs.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
 
@@ -965,7 +977,7 @@ def get_lookups():
 
     # Get system lookups - single API call for fast response
     # Note: Pack lookups are only available in Search (they appear with pack prefix in /system/lookups)
-    # For Stream/Edge, pack lookups are not exposed via the REST API
+    # For Stream/Edge, use /api/packs and /api/packs/<pack_id>/lookups separately
     url = build_api_url(api_type, worker_group, path='/system/lookups')
 
     try:
@@ -997,6 +1009,325 @@ def get_lookups():
     return jsonify({'lookups': lookups})
 
 
+def fetch_pack_lookups_internal(worker_group, api_type, token):
+    """Internal function to fetch pack lookups by exporting and parsing .crbl files.
+
+    This is the only way to discover pack lookups in Stream/Edge since the
+    /system/lookups endpoint doesn't include them (unlike Search).
+
+    Returns a list of lookup dicts.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    pack_lookups = []
+
+    print(f"\n[PACK-LOOKUPS] Discovering pack lookups in {worker_group} ({api_type})")
+
+    # Step 1: List all packs in the worker group
+    packs_url = build_api_url(api_type, worker_group, path='/packs')
+    print(f"   [INFO] Listing packs: {packs_url}")
+
+    packs_response = requests.get(packs_url, headers=headers, timeout=15)
+    if packs_response.status_code != 200:
+        print(f"   [WARNING] Failed to list packs: HTTP {packs_response.status_code}")
+        return []
+
+    packs_data = packs_response.json()
+    packs = packs_data.get('items', [])
+    print(f"   [OK] Found {len(packs)} pack(s)")
+
+    if not packs:
+        return []
+
+    # Step 2: Export each pack and extract lookup files
+    for pack in packs:
+        pack_id = pack.get('id')
+        if not pack_id:
+            continue
+
+        print(f"   [PACK] Processing pack: {pack_id}")
+
+        # Export the pack as .crbl file
+        export_url = build_api_url(api_type, worker_group, path=f'/packs/{pack_id}/export', query='mode=merge')
+        print(f"      [EXPORT] {export_url}")
+
+        try:
+            export_response = requests.get(export_url, headers=headers, timeout=30, stream=True)
+            if export_response.status_code != 200:
+                print(f"      [WARNING] Failed to export pack {pack_id}: HTTP {export_response.status_code}")
+                continue
+
+            # The .crbl file is a gzipped tarball
+            crbl_content = export_response.content
+            print(f"      [OK] Downloaded {len(crbl_content)} bytes")
+
+            # Extract lookup files from the tarball
+            lookups_found = extract_lookups_from_crbl(crbl_content, pack_id)
+            print(f"      [OK] Found {len(lookups_found)} lookup(s) in pack")
+
+            for lookup in lookups_found:
+                # Determine if lookup is memory-based from mode in lookups.yml
+                mode = lookup.get('mode', 'memory').lower()
+                is_memory = mode != 'disk'
+                pack_lookups.append({
+                    'id': f"{pack_id}.{lookup['filename']}",  # Use pack prefix format
+                    'filename': lookup['filename'],
+                    'size': lookup.get('size', 0),
+                    'inMemory': is_memory,
+                    'pack': pack_id,
+                    'packPath': lookup.get('path', '')
+                })
+
+        except requests.exceptions.Timeout:
+            print(f"      [WARNING] Timeout exporting pack {pack_id}")
+            continue
+        except Exception as e:
+            print(f"      [WARNING] Error processing pack {pack_id}: {str(e)}")
+            continue
+
+    print(f"   [DONE] Total pack lookups found: {len(pack_lookups)}")
+    return pack_lookups
+
+
+@app.route('/api/packs', methods=['GET'])
+def list_packs():
+    """List all packs in a worker group (without exporting them).
+
+    This is a fast endpoint that just lists pack names/IDs.
+    """
+    if not app_config['authenticated']:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    worker_group = request.args.get('worker_group')
+    api_type = request.args.get('api_type', 'stream')
+
+    if not worker_group:
+        return jsonify({'error': 'Worker group required'}), 400
+
+    token = app_config['token']
+    headers = {"Authorization": f"Bearer {token}"}
+
+    print(f"\n[PACKS] Listing packs in {worker_group} ({api_type})")
+
+    packs_url = build_api_url(api_type, worker_group, path='/packs')
+    print(f"   [INFO] URL: {packs_url}")
+
+    try:
+        response = requests.get(packs_url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            print(f"   [WARNING] Failed to list packs: HTTP {response.status_code}")
+            return jsonify({'packs': [], 'error': f'HTTP {response.status_code}'})
+
+        data = response.json()
+        packs = data.get('items', [])
+
+        # Return simplified pack info
+        pack_list = []
+        for pack in packs:
+            pack_list.append({
+                'id': pack.get('id'),
+                'displayName': pack.get('displayName', pack.get('id')),
+                'version': pack.get('version', ''),
+                'description': pack.get('description', '')
+            })
+
+        print(f"   [OK] Found {len(pack_list)} pack(s)")
+        return jsonify({'packs': pack_list})
+
+    except Exception as e:
+        print(f"   [ERROR] Failed to list packs: {str(e)}")
+        return jsonify({'packs': [], 'error': str(e)})
+
+
+@app.route('/api/packs/<pack_id>/lookups', methods=['GET'])
+def get_single_pack_lookups(pack_id):
+    """Get lookup files from a single pack by exporting and parsing its .crbl file.
+
+    This allows the frontend to load pack lookups one at a time with progress indication.
+    """
+    if not app_config['authenticated']:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    worker_group = request.args.get('worker_group')
+    api_type = request.args.get('api_type', 'stream')
+
+    if not worker_group:
+        return jsonify({'error': 'Worker group required'}), 400
+
+    if api_type == 'search':
+        return jsonify({'lookups': [], 'message': 'Search API already includes pack lookups in /system/lookups'})
+
+    token = app_config['token']
+    headers = {"Authorization": f"Bearer {token}"}
+
+    print(f"\n[PACK-EXPORT] Exporting pack '{pack_id}' from {worker_group} ({api_type})")
+
+    # Export the pack as .crbl file
+    export_url = build_api_url(api_type, worker_group, path=f'/packs/{pack_id}/export', query='mode=merge')
+    print(f"   [EXPORT] {export_url}")
+
+    try:
+        export_response = requests.get(export_url, headers=headers, timeout=60, stream=True)
+        if export_response.status_code != 200:
+            print(f"   [WARNING] Failed to export pack {pack_id}: HTTP {export_response.status_code}")
+            return jsonify({'lookups': [], 'error': f'Failed to export pack: HTTP {export_response.status_code}'})
+
+        # The .crbl file is a gzipped tarball
+        crbl_content = export_response.content
+        print(f"   [OK] Downloaded {len(crbl_content)} bytes")
+
+        # Extract lookup files from the tarball
+        lookups_found = extract_lookups_from_crbl(crbl_content, pack_id)
+        print(f"   [OK] Found {len(lookups_found)} lookup(s) in pack")
+
+        pack_lookups = []
+        for lookup in lookups_found:
+            # Determine if lookup is memory-based from mode in lookups.yml
+            mode = lookup.get('mode', 'memory').lower()
+            is_memory = mode != 'disk'
+            pack_lookups.append({
+                'id': f"{pack_id}.{lookup['filename']}",  # Use pack prefix format
+                'filename': lookup['filename'],
+                'size': lookup.get('size', 0),
+                'inMemory': is_memory,
+                'pack': pack_id,
+                'packPath': lookup.get('path', '')
+            })
+
+        return jsonify({'lookups': pack_lookups, 'packId': pack_id})
+
+    except requests.exceptions.Timeout:
+        print(f"   [WARNING] Timeout exporting pack {pack_id}")
+        return jsonify({'lookups': [], 'error': 'Timeout exporting pack'})
+    except Exception as e:
+        print(f"   [ERROR] Error processing pack {pack_id}: {str(e)}")
+        return jsonify({'lookups': [], 'error': str(e)})
+
+
+@app.route('/api/pack-lookups', methods=['GET'])
+def get_pack_lookups():
+    """Get lookup files from ALL packs in Stream/Edge by exporting and parsing .crbl files.
+
+    This endpoint exports all packs at once. For selective loading with progress,
+    use /api/packs to list packs, then /api/packs/<pack_id>/lookups for each.
+    """
+    if not app_config['authenticated']:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    worker_group = request.args.get('worker_group')
+    api_type = request.args.get('api_type', 'stream')
+
+    if not worker_group:
+        return jsonify({'error': 'Worker group required'}), 400
+
+    # This is only needed for Stream/Edge - Search already shows pack lookups in /system/lookups
+    if api_type == 'search':
+        return jsonify({'lookups': [], 'message': 'Search API already includes pack lookups in /system/lookups'})
+
+    token = app_config['token']
+
+    try:
+        pack_lookups = fetch_pack_lookups_internal(worker_group, api_type, token)
+        return jsonify({'lookups': pack_lookups})
+    except Exception as e:
+        print(f"   [ERROR] Failed to get pack lookups: {str(e)}")
+        return jsonify({'lookups': [], 'error': str(e)})
+
+
+def extract_lookups_from_crbl(crbl_content, pack_id):
+    """Extract lookup file information from a .crbl (gzipped tarball) file.
+
+    Pack structure typically contains lookups in:
+    - lookups/ directory (for lookup files)
+    - default/lookups/ or local/lookups/ directories
+
+    Also reads lookups.yml to determine mode (memory/disk) for each lookup.
+
+    Returns list of dicts with 'filename', 'size', 'path', 'mode' keys.
+    """
+    lookups = []
+    lookup_configs = {}  # filename -> mode mapping from lookups.yml
+
+    def parse_lookups_yml(content):
+        """Parse lookups.yml to extract mode settings for each lookup."""
+        configs = {}
+        try:
+            # Simple YAML-like parsing for lookups.yml
+            # Format is typically:
+            # filename.csv:
+            #   mode: memory
+            # or
+            # filename.csv:
+            #   mode: disk
+            lines = content.decode('utf-8', errors='ignore').split('\n')
+            current_file = None
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith('#'):
+                    continue
+                # Check for filename entry (ends with : and no leading spaces means top-level)
+                if not line.startswith(' ') and not line.startswith('\t') and stripped.endswith(':'):
+                    current_file = stripped[:-1]  # Remove trailing colon
+                elif current_file and 'mode:' in stripped.lower():
+                    mode_value = stripped.split(':', 1)[1].strip().lower()
+                    configs[current_file] = mode_value
+                    print(f"            [CONFIG] {current_file}: mode={mode_value}")
+        except Exception as e:
+            print(f"         [WARNING] Failed to parse lookups.yml: {e}")
+        return configs
+
+    def process_tar(tar):
+        nonlocal lookup_configs
+        # First pass: find and parse lookups.yml
+        for member in tar.getmembers():
+            if member.isfile() and member.name.endswith('lookups.yml'):
+                try:
+                    f = tar.extractfile(member)
+                    if f:
+                        lookup_configs = parse_lookups_yml(f.read())
+                        print(f"         [CONFIG] Found lookups.yml with {len(lookup_configs)} entries")
+                except Exception as e:
+                    print(f"         [WARNING] Could not read lookups.yml: {e}")
+
+        # Second pass: find lookup files
+        for member in tar.getmembers():
+            path_parts = member.name.split('/')
+            if member.isfile() and 'lookups' in path_parts:
+                filename = path_parts[-1]
+                if filename.endswith(('.csv', '.csv.gz', '.mmdb', '.json', '.gz')):
+                    # Check if we have mode info from lookups.yml
+                    mode = lookup_configs.get(filename, 'memory')  # Default to memory if not specified
+                    lookups.append({
+                        'filename': filename,
+                        'size': member.size,
+                        'path': member.name,
+                        'mode': mode
+                    })
+                    print(f"         [LOOKUP] {member.name} ({member.size} bytes, mode={mode})")
+
+    try:
+        # .crbl files are gzipped tarballs
+        with io.BytesIO(crbl_content) as crbl_io:
+            with tarfile.open(fileobj=crbl_io, mode='r:gz') as tar:
+                process_tar(tar)
+
+    except tarfile.TarError as e:
+        print(f"      [WARNING] Failed to parse crbl as tarball: {str(e)}")
+        # Try as plain gzip
+        try:
+            with io.BytesIO(crbl_content) as crbl_io:
+                with gzip.GzipFile(fileobj=crbl_io) as gz:
+                    decompressed = gz.read()
+                    with io.BytesIO(decompressed) as tar_io:
+                        with tarfile.open(fileobj=tar_io, mode='r:') as tar:
+                            process_tar(tar)
+        except Exception as e2:
+            print(f"      [WARNING] Failed alternate extraction: {str(e2)}")
+    except Exception as e:
+        print(f"      [WARNING] Error extracting lookups: {str(e)}")
+
+    return lookups
+
+
 def parse_pack_lookup(lookup_filename, pack_hint=None):
     """Parse a lookup filename to determine if it's a pack lookup.
     Returns (pack_name, actual_filename) if pack lookup, or (None, lookup_filename) if system lookup.
@@ -1019,14 +1350,21 @@ def parse_pack_lookup(lookup_filename, pack_hint=None):
     # Need at least 3 parts: pack_name, filename, extension
     if len(parts) >= 3:
         potential_pack = parts[0]
-        # Common pack name patterns:
-        # - Contains hyphen (e.g., cribl-search, cribl-search-aws-vpc-flow-logs)
-        # - Contains underscore (e.g., okta_improbable)
-        # - Known prefixes
+        # Pack name detection - must meet stricter criteria:
+        # 1. Contains hyphen (e.g., cribl-search, cribl-cisco-asa-cleanup) - most common pattern
+        # 2. Known vendor prefixes that are commonly used as pack prefixes
+        # 3. Underscore alone is NOT enough (e.g., pkg_vuln.csv.gz is not a pack)
+        #    - Only treat as pack if it also starts with a known vendor prefix
+        known_pack_prefixes = ['cribl', 'okta', 'aws', 'azure', 'gcp', 'splunk', 'crowdstrike', 'palo', 'cisco']
+
         is_pack_name = (
+            # Hyphenated names are almost always packs (e.g., cribl-search, my-custom-pack)
             '-' in potential_pack or
-            '_' in potential_pack or
-            potential_pack in ['cribl', 'okta', 'aws', 'azure', 'gcp', 'splunk', 'crowdstrike']
+            # Known vendor name as the full pack name
+            potential_pack in known_pack_prefixes or
+            # Underscore names only if they start with a known vendor prefix
+            # e.g., okta_improbable is a pack, but pkg_vuln is not
+            ('_' in potential_pack and any(potential_pack.startswith(prefix + '_') for prefix in known_pack_prefixes))
         )
         if is_pack_name:
             pack_name = parts[0]
@@ -1052,9 +1390,9 @@ def get_lookup_content(worker_group, lookup_filename):
         headers = {"Authorization": f"Bearer {token}"}
 
         if pack_name and api_type in ['stream', 'edge']:
-            # Pack lookup - use pack endpoint
+            # Pack lookup - use /p/{pack}/ endpoint (scoped to pack resources)
             download_url = build_api_url(api_type, worker_group,
-                                         path=f'/packs/{pack_name}/lookups/{actual_filename}/content',
+                                         path=f'/p/{pack_name}/lookups/{actual_filename}/content',
                                          query='raw=1')
             print(f"   [PACK] Pack: {pack_name}, File: {actual_filename}")
         else:
@@ -1199,9 +1537,10 @@ def transfer_lookup():
             pack_name, actual_filename = parse_pack_lookup(lookup_filename)
 
             if pack_name and source_api_type in ['stream', 'edge']:
-                # Pack lookup - use pack endpoint
+                # Pack lookup - try /p/{pack}/ endpoint first (scoped to pack), fall back to /packs/{pack}/
+                # The /p/{pack}/ prefix scopes requests to resources within a specific pack
                 download_url = build_api_url(source_api_type, source_group,
-                                             path=f'/packs/{pack_name}/lookups/{actual_filename}/content',
+                                             path=f'/p/{pack_name}/lookups/{actual_filename}/content',
                                              query='raw=1')
                 print(f"   [PACK] Downloading from pack: {pack_name}, file: {actual_filename}")
             else:
