@@ -4,15 +4,29 @@ A web-based tool for managing and transferring lookup tables between Cribl Cloud
 
 ## Features
 
+### Core Functionality
 - **Multi-API Support**: Transfer lookups between Cribl Stream, Search, and Edge worker groups
 - **Lookup Type Management**: Support for both memory-based and disk-based lookups
 - **Built-in Editor**: Edit lookup content and rename files before transfer
 - **Safe Deployments**: Selective commit and deploy to avoid deploying unrelated changes
 - **Pack Support**: Automatically handles Cribl Pack lookup naming conventions
 - **Type Conversion**: Handle conflicts when changing lookup types (disk ↔ memory)
-- **Dark/Light Mode**: Toggle between dark and light themes
 - **Auto-Commit**: Automatically commits disk-based lookups to prevent hanging changes
 - **Real-time Status**: View pending changes, current versions, and deployment status
+
+### Bulk Transfer (New!)
+- **Multi-Lookup Selection**: Select multiple lookup files to transfer at once using checkboxes
+- **Multi-Target Selection**: Transfer to multiple worker groups or fleets simultaneously
+- **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
+- **Bulk Transfer Progress**: Real-time progress indicator showing current operation count and target
+- **Select All / Deselect All**: Quick selection controls for both lookups and target groups
+
+### User Interface
+- **Dark/Light Mode**: Toggle between dark and light themes
+- **Collapsible Panels**: Minimize the Connected panel, Lookup Editor, Console, and API Commands sections
+- **Binary File Support**: Handles `.mmdb` and `.gz` files (rename-only mode, no content editing)
+- **In-App README**: Quick access to documentation via Help button
+- **Improved Typography**: Monospace font styling for better code/data readability
 
 ## Prerequisites
 
@@ -76,12 +90,12 @@ python app.py
 
 ## Workflow
 
-### Transferring a Lookup
+### Transferring a Single Lookup
 
 1. **Select Source**:
    - Choose API type (Stream, Search, or Edge)
    - Select worker group (or use default_search for Search)
-   - Select lookup file from the list
+   - Click on a lookup file from the list
 
 2. **Select Target**:
    - Choose target API type
@@ -89,7 +103,7 @@ python app.py
    - Choose lookup type (disk-based or memory-based)
 
 3. **Optional: Edit Content**:
-   - Click "Load from Source" to edit the lookup
+   - Click the edit icon on a lookup to load it into the editor
    - Modify content or rename the file
    - Click "Save" when done
 
@@ -101,6 +115,31 @@ python app.py
 5. **Deploy** (for Stream/Edge only):
    - Click "Deploy" to push changes to workers
    - Deployment is selective - only deploys the transferred lookup
+
+### Bulk Transfer (Multiple Lookups to Multiple Targets)
+
+1. **Select Source**:
+   - Choose API type and worker group
+   - Use checkboxes to select multiple lookup files
+   - Use "Select All" / "Deselect All" for quick selection
+
+2. **Select Targets**:
+   - Choose target API type
+   - Use checkboxes to select multiple target worker groups or fleets
+   - Use "Select All" / "Deselect All" for quick selection
+
+3. **Configure Lookup Types** (Optional):
+   - Click the disk/memory icon next to each selected lookup to override the default type
+   - Each lookup can have its own type setting (disk-based or memory-based)
+
+4. **Transfer**:
+   - Click "Transfer" button
+   - Watch the progress indicator showing current operation (e.g., "3/12")
+   - The commit message automatically reflects the bulk operation details
+
+5. **Deploy**:
+   - After bulk transfer completes, click "Deploy" to push all changes
+   - All transferred lookups are deployed to their respective targets
 
 ### Handling Type Conflicts
 
@@ -207,6 +246,18 @@ To modify:
 For issues, questions, or contributions, please [open an issue](your-repo-url/issues).
 
 ## Changelog
+
+### Version 1.1.0 (December 2025)
+- **Bulk Transfer Support**: Transfer multiple lookups to multiple worker groups/fleets simultaneously
+- **Multi-Selection UI**: Checkbox-based selection for lookups and target groups with Select All/Deselect All
+- **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
+- **Bulk Transfer Progress**: Real-time progress indicator with current operation count and target display
+- **Collapsible Panels**: Minimize/expand Connected panel, Lookup Editor, Console, and API Commands sections
+- **Binary File Support**: Handle `.mmdb` and `.gz` files with rename-only mode (no content editing)
+- **In-App Documentation**: Quick access to README via Help button in the UI
+- **Improved Typography**: Better monospace font styling throughout the interface
+- **UI Improvements**: Streamlined layout, better button sizing, and cleaner visual hierarchy
+- **Bug Fixes**: Fixed race conditions and issues with deleting lookup tables and partial deployments
 
 ### Version 1.0.0
 - Initial release
