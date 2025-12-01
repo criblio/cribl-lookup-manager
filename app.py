@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
 Cribl Lookup Manager - Backend Server
-Version: 1.0.1 (Security Hardened)
-Date: November 21, 2025
+Version: 1.2.0
+Date: December 1, 2025
+
+New in v1.2.0:
+- Bulk transfer support (multiple lookups to multiple targets)
+- Per-lookup type override for bulk transfers
+- Binary file support (.mmdb, .gz)
+- Collapsible UI panels
+- Bug fixes for race conditions and partial deployments
 
 Security Fixes in v1.0.1:
 - Removed SSRF vulnerability (/api/test-curl endpoint)

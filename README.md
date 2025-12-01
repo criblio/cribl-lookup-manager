@@ -247,7 +247,7 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 
 ## Changelog
 
-### Version 1.1.0 (December 2025)
+### Version 1.2.0 (December 2025)
 - **Bulk Transfer Support**: Transfer multiple lookups to multiple worker groups/fleets simultaneously
 - **Multi-Selection UI**: Checkbox-based selection for lookups and target groups with Select All/Deselect All
 - **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
