@@ -1328,6 +1328,56 @@ def extract_lookups_from_crbl(crbl_content, pack_id):
     return lookups
 
 
+def extract_lookup_content_from_crbl(crbl_content, lookup_filename):
+    """Extract the actual content of a specific lookup file from a .crbl (gzipped tarball).
+
+    Args:
+        crbl_content: The raw bytes of the .crbl file
+        lookup_filename: The name of the lookup file to extract (e.g., 'asa_drops.csv')
+
+    Returns:
+        The file content as bytes, or None if not found.
+    """
+    def find_in_tar(tar):
+        for member in tar.getmembers():
+            path_parts = member.name.split('/')
+            if member.isfile() and 'lookups' in path_parts:
+                filename = path_parts[-1]
+                if filename == lookup_filename:
+                    print(f"      [EXTRACT] Found {member.name}")
+                    f = tar.extractfile(member)
+                    if f:
+                        return f.read()
+        return None
+
+    try:
+        # .crbl files are gzipped tarballs
+        with io.BytesIO(crbl_content) as crbl_io:
+            with tarfile.open(fileobj=crbl_io, mode='r:gz') as tar:
+                content = find_in_tar(tar)
+                if content:
+                    return content
+    except tarfile.TarError as e:
+        print(f"      [WARNING] Failed to parse crbl as tarball: {str(e)}")
+        # Try as plain gzip then tar
+        try:
+            import gzip
+            with io.BytesIO(crbl_content) as gz_io:
+                with gzip.GzipFile(fileobj=gz_io, mode='rb') as gz:
+                    decompressed = gz.read()
+                    with io.BytesIO(decompressed) as tar_io:
+                        with tarfile.open(fileobj=tar_io, mode='r:') as tar:
+                            content = find_in_tar(tar)
+                            if content:
+                                return content
+        except Exception as e2:
+            print(f"      [WARNING] Failed alternate extraction: {str(e2)}")
+    except Exception as e:
+        print(f"      [WARNING] Error extracting lookup content: {str(e)}")
+
+    return None
+
+
 def parse_pack_lookup(lookup_filename, pack_hint=None):
     """Parse a lookup filename to determine if it's a pack lookup.
     Returns (pack_name, actual_filename) if pack lookup, or (None, lookup_filename) if system lookup.
