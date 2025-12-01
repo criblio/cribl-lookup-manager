@@ -1440,24 +1440,44 @@ def get_lookup_content(worker_group, lookup_filename):
         headers = {"Authorization": f"Bearer {token}"}
 
         if pack_name and api_type in ['stream', 'edge']:
-            # Pack lookup - use /p/{pack}/ endpoint (scoped to pack resources)
-            download_url = build_api_url(api_type, worker_group,
-                                         path=f'/p/{pack_name}/lookups/{actual_filename}/content',
-                                         query='raw=1')
-            print(f"   [PACK] Pack: {pack_name}, File: {actual_filename}")
+            # Pack lookup in Stream/Edge - must export .crbl and extract the file
+            # The Cribl API doesn't support direct download of pack lookup files
+            print(f"   [PACK] Exporting pack: {pack_name} to extract file: {actual_filename}")
+
+            export_url = build_api_url(api_type, worker_group,
+                                       path=f'/packs/{pack_name}/export',
+                                       query='mode=merge')
+            print(f"   Export URL: {export_url}")
+
+            export_response = requests.get(export_url, headers=headers, timeout=60, stream=True)
+            export_response.raise_for_status()
+            crbl_content = export_response.content
+            print(f"   [OK] Downloaded pack .crbl ({len(crbl_content)} bytes)")
+
+            # Extract the specific lookup file from the tarball
+            content = extract_lookup_content_from_crbl(crbl_content, actual_filename)
+            if content is None:
+                return jsonify({'error': f"Lookup file '{actual_filename}' not found in pack '{pack_name}'"}), 404
+            print(f"   [OK] Extracted {len(content)} bytes from pack")
+
+            # Return the content (decode if text)
+            try:
+                return content.decode('utf-8'), 200, {'Content-Type': 'text/plain'}
+            except UnicodeDecodeError:
+                return content, 200, {'Content-Type': 'application/octet-stream'}
         else:
-            # System lookup
+            # System lookup or Search pack lookup (Search API supports direct download)
             download_url = build_api_url(api_type, worker_group,
                                          path=f'/system/lookups/{lookup_filename}/content',
                                          query='raw=1')
 
-        print(f"   Download URL: {download_url}")
+            print(f"   Download URL: {download_url}")
 
-        response = requests.get(download_url, headers=headers, timeout=30)
-        response.raise_for_status()
+            response = requests.get(download_url, headers=headers, timeout=30)
+            response.raise_for_status()
 
-        # Return the raw content as text
-        return response.text, 200, {'Content-Type': 'text/plain'}
+            # Return the raw content as text
+            return response.text, 200, {'Content-Type': 'text/plain'}
 
     except requests.exceptions.HTTPError as e:
         error_msg = f"{e.response.status_code} {e.response.reason}"
@@ -1587,57 +1607,76 @@ def transfer_lookup():
             pack_name, actual_filename = parse_pack_lookup(lookup_filename)
 
             if pack_name and source_api_type in ['stream', 'edge']:
-                # Pack lookup - try /p/{pack}/ endpoint first (scoped to pack), fall back to /packs/{pack}/
-                # The /p/{pack}/ prefix scopes requests to resources within a specific pack
-                download_url = build_api_url(source_api_type, source_group,
-                                             path=f'/p/{pack_name}/lookups/{actual_filename}/content',
-                                             query='raw=1')
-                print(f"   [PACK] Downloading from pack: {pack_name}, file: {actual_filename}")
+                # Pack lookup in Stream/Edge - must export .crbl and extract the file
+                # The Cribl API doesn't support direct download of pack lookup files
+                print(f"   [PACK] Exporting pack: {pack_name} to extract file: {actual_filename}")
+
+                export_url = build_api_url(source_api_type, source_group,
+                                           path=f'/packs/{pack_name}/export',
+                                           query='mode=merge')
+                print(f"   Export URL: {export_url}")
+                headers = {"Authorization": f"Bearer {token}"}
+
+                try:
+                    export_response = requests.get(export_url, headers=headers, timeout=60, stream=True)
+                    export_response.raise_for_status()
+                    crbl_content = export_response.content
+                    print(f"   [OK] Downloaded pack .crbl ({len(crbl_content)} bytes)")
+
+                    # Extract the specific lookup file from the tarball
+                    content = extract_lookup_content_from_crbl(crbl_content, actual_filename)
+                    if content is None:
+                        raise Exception(f"Lookup file '{actual_filename}' not found in pack '{pack_name}'")
+                    print(f"   [OK] Extracted {len(content)} bytes from pack")
+
+                except requests.exceptions.HTTPError as e:
+                    print(f"   [ERROR] Failed to export pack: HTTP {e.response.status_code}")
+                    raise Exception(f"Failed to export pack '{pack_name}': HTTP {e.response.status_code}")
             else:
-                # System lookup
+                # System lookup or Search pack lookup (Search API supports direct download)
                 download_url = build_api_url(source_api_type, source_group,
                                              path=f'/system/lookups/{lookup_filename}/content',
                                              query='raw=1')
 
-            print(f"   Download URL: {download_url}")
-            headers = {"Authorization": f"Bearer {token}"}
-            
-            # Retry logic for downloads (large files can timeout)
-            max_retries = 3
-            retry_delay = 2
-            response = None
-            
-            for attempt in range(1, max_retries + 1):
-                try:
-                    print(f"   [DOWNLOAD] Attempt {attempt}/{max_retries}...")
-                    # Increased timeout to 120 seconds for large files, stream the response
-                    response = requests.get(download_url, headers=headers, timeout=120, stream=True)
-                    response.raise_for_status()
-                    
-                    # Download with progress indication
-                    content = b''
-                    total_size = int(response.headers.get('content-length', 0))
-                    if total_size > 0:
-                        print(f"   [INFO] File size: {total_size / 1024:.2f} KB")
-                    
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            content += chunk
-                    
-                    print(f"   [OK] Downloaded {len(content)} bytes")
-                    break  # Success, exit retry loop
-                    
-                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                    if attempt < max_retries:
-                        print(f"   [WARN] Connection issue: {type(e).__name__}, retrying in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        print(f"   [ERROR] Failed after {max_retries} attempts")
-                        raise
-            
-            if response is None:
-                raise Exception("Failed to download file after all retries")
+                print(f"   Download URL: {download_url}")
+                headers = {"Authorization": f"Bearer {token}"}
+
+                # Retry logic for downloads (large files can timeout)
+                max_retries = 3
+                retry_delay = 2
+                response = None
+
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        print(f"   [DOWNLOAD] Attempt {attempt}/{max_retries}...")
+                        # Increased timeout to 120 seconds for large files, stream the response
+                        response = requests.get(download_url, headers=headers, timeout=120, stream=True)
+                        response.raise_for_status()
+
+                        # Download with progress indication
+                        content = b''
+                        total_size = int(response.headers.get('content-length', 0))
+                        if total_size > 0:
+                            print(f"   [INFO] File size: {total_size / 1024:.2f} KB")
+
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                content += chunk
+
+                        print(f"   [OK] Downloaded {len(content)} bytes")
+                        break  # Success, exit retry loop
+
+                    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                        if attempt < max_retries:
+                            print(f"   [WARN] Connection issue: {type(e).__name__}, retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            print(f"   [ERROR] Failed after {max_retries} attempts")
+                            raise
+
+                if response is None:
+                    raise Exception("Failed to download file after all retries")
         
         # Save to temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(target_filename).suffix) as tmp_file:
