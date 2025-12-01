@@ -392,7 +392,69 @@ def discover_api_paths():
                 'works': False,
                 'error': str(e)
             }
-    
+
+    return jsonify(results)
+
+@app.route('/api/discover-pack-lookups', methods=['GET'])
+def discover_pack_lookups():
+    """Discover the correct API path for pack lookups"""
+    if not app_config['authenticated']:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    worker_group = request.args.get('worker_group', 'default')
+    pack_id = request.args.get('pack_id')
+    api_type = request.args.get('api_type', 'stream')
+
+    base_url = get_base_url()
+    token = app_config['token']
+    headers = {"Authorization": f"Bearer {token}"}
+    results = {}
+
+    print(f"\n[DISCOVER-PACK] Finding pack lookup path for {pack_id} in {worker_group}")
+
+    # First, get the pack detail to see what fields it returns
+    pack_detail_url = build_api_url(api_type, worker_group, path=f'/packs/{pack_id}')
+    try:
+        print(f"   Getting pack detail: {pack_detail_url}")
+        response = requests.get(pack_detail_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            pack_data = response.json()
+            results['pack_detail_url'] = pack_detail_url
+            results['pack_keys'] = list(pack_data.keys()) if isinstance(pack_data, dict) else str(type(pack_data))
+            results['pack_data_preview'] = json.dumps(pack_data, indent=2)[:2000]
+    except Exception as e:
+        results['pack_detail_error'] = str(e)
+
+    # Try various pack lookup endpoint patterns
+    test_patterns = [
+        f"/packs/{pack_id}/lookups",
+        f"/packs/{pack_id}/knowledge/lookups",
+        f"/lib/{pack_id}/lookups",
+        f"/lib/{pack_id}/knowledge/lookups",
+        f"/p/{pack_id}/lookups",
+        f"/p/{pack_id}/knowledge/lookups",
+    ]
+
+    for pattern in test_patterns:
+        url = build_api_url(api_type, worker_group, path=pattern)
+        try:
+            print(f"   Testing: {url}")
+            response = requests.get(url, headers=headers, timeout=10)
+            content_type = response.headers.get('Content-Type', '')
+            result = {
+                'status': response.status_code,
+                'content_type': content_type
+            }
+            if response.status_code == 200 and 'application/json' in content_type:
+                data = response.json()
+                result['data_preview'] = json.dumps(data, indent=2)[:500]
+                result['works'] = True
+            else:
+                result['works'] = False
+            results[url] = result
+        except Exception as e:
+            results[url] = {'error': str(e), 'works': False}
+
     return jsonify(results)
 
 @app.route('/api/config', methods=['GET'])
@@ -485,106 +547,77 @@ def extract_org_id_and_base_url(org_input):
 
 def get_base_url():
     """Get base URL with proper fallback to organization_id
-    
+
     Returns the correct base URL for API calls. If base_url is not set in app_config,
     it constructs it from organization_id to avoid using the invalid 'app.cribl.cloud'.
     """
     base_url = app_config.get('base_url')
-    
-    # ALWAYS print what we got from config for debugging
-    print(f"[DEBUG] get_base_url() called - Current base_url in config: {base_url}")
-    
-    # Always validate base_url - if it contains double protocol or .cribl.cloud, reconstruct it
+
+    # Validate base_url - if it contains double protocol or malformed .cribl.cloud, reconstruct it
     if base_url and ('https://https://' in base_url or '.cribl.cloud/.cribl.cloud' in base_url or 'https://' in base_url[8:]):
-        print(f"[WARNING] Detected malformed base_url: {base_url}")
-        print(f"[WARNING] Forcing reconstruction...")
         base_url = None  # Force reconstruction
-    
+
     if not base_url and app_config.get('organization_id'):
         # Construct from organization_id if not already set
         org_id = app_config['organization_id']
-        
-        print(f"[DEBUG] Reconstructing from org_id: {org_id}")
-        
+
         # Clean up organization_id - remove protocol and trailing slashes
         org_id = org_id.strip()
-        # Remove https:// or http:// prefix if present
         if org_id.startswith('https://'):
             org_id = org_id[8:]
         elif org_id.startswith('http://'):
             org_id = org_id[7:]
-        # Remove trailing slashes
         org_id = org_id.rstrip('/')
-        
+
         # If it already ends with .cribl.cloud, use as-is; otherwise add it
         if org_id.endswith('.cribl.cloud'):
             base_url = f'https://{org_id}'
         else:
             base_url = f'https://{org_id}.cribl.cloud'
-        
-        print(f"[DEBUG] Constructed base_url from org_id: {base_url}")
+
         # Update the stored value with the corrected one
         app_config['base_url'] = base_url
-    
+
     # Final fallback with proper cleaning
     if not base_url and app_config.get('organization_id'):
         org_id = app_config.get('organization_id', 'unknown')
-        print(f"[DEBUG] Final fallback, org_id: {org_id}")
-        # Clean it before using
         org_id = org_id.strip()
         if org_id.startswith('https://'):
             org_id = org_id[8:]
         elif org_id.startswith('http://'):
             org_id = org_id[7:]
         org_id = org_id.rstrip('/')
-        
+
         if org_id.endswith('.cribl.cloud'):
             base_url = f'https://{org_id}'
         else:
             base_url = f'https://{org_id}.cribl.cloud'
-    
-    print(f"[DEBUG] get_base_url() returning: {base_url}")
+
     return base_url
 
 def build_api_url(api_type, worker_group=None, path='', query=''):
     """Build API URL based on tenant type and API type
-    
+
     Based on Cribl API documentation:
     - Cribl.Cloud: https://{workspace}-{org}.cribl.cloud/api/v1/m/{group}/...
     - On-prem: https://{hostname}:{port}/api/v1/m/{group}/...
+
+    Note: Both Stream worker groups AND Edge fleets use /m/{group} for resource access
+    (lookups, pipelines, etc). The /f/ prefix was incorrect.
     """
     base_url = get_base_url()  # Use helper function
     is_direct_tenant = app_config.get('is_direct_tenant', False)
     organization_id = app_config.get('organization_id')
-    
-    # All Cribl.Cloud deployments use the same format
-    if is_direct_tenant or '.cribl.cloud' in base_url:
-        # Cribl.Cloud format: https://{subdomain}.cribl.cloud/api/v1/m/{group}/...
-        if api_type == 'edge':
-            # Edge uses /api/v1/f/{fleet_id} for accessing fleet resources
-            base_path = f"{base_url}/api/v1"
-            if worker_group:
-                base_path += f"/f/{worker_group}"
-        else:  # stream or search
-            # Both Stream and Search use /api/v1/m/{group_id} format
-            base_path = f"{base_url}/api/v1"
-            if worker_group:
-                base_path += f"/m/{worker_group}"
-    else:
-        # On-prem format: https://{hostname}:{port}/api/v1/m/{group}/...
-        if api_type == 'edge':
-            base_path = f"{base_url}/api/v1"
-            if worker_group:
-                base_path += f"/f/{worker_group}"
-        else:  # stream or search
-            base_path = f"{base_url}/api/v1"
-            if worker_group:
-                base_path += f"/m/{worker_group}"
-    
+
+    # All API types (stream, edge, search) use /m/{group} for resource access
+    base_path = f"{base_url}/api/v1"
+    if worker_group:
+        base_path += f"/m/{worker_group}"
+
     url = base_path + path
     if query:
         url += f"?{query}"
-    
+
     return url
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -909,85 +942,128 @@ def get_worker_groups():
 
 @app.route('/api/lookups', methods=['GET'])
 def get_lookups():
-    """Get list of lookup files in a worker group"""
+    """Get list of lookup files in a worker group, including pack lookups"""
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
-    
+
     worker_group = request.args.get('worker_group')
     api_type = request.args.get('api_type', 'stream')
-    
+
     if not worker_group:
         return jsonify({'error': 'Worker group required'}), 400
-    
+
     token = app_config['token']
-    
-    # Use helper to build URL
-    url = build_api_url(api_type, worker_group, path='/system/lookups')
-    
     headers = {"Authorization": f"Bearer {token}"}
-    
+    lookups = []
+
+    # Get system lookups - single API call for fast response
+    # Note: Pack lookups are only available in Search (they appear with pack prefix in /system/lookups)
+    # For Stream/Edge, pack lookups are not exposed via the REST API
+    url = build_api_url(api_type, worker_group, path='/system/lookups')
+
     try:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
-        
-        # Debug: Print full response to see what's available
-        print(f"\n[DEBUG] Lookups API response for {worker_group}:")
-        if data.get('items') and len(data.get('items', [])) > 0:
-            print(f"   Total items: {len(data['items'])}")
-            # Print first 3 items to see the structure
-            for i, item in enumerate(data['items'][:3]):
-                mode = item.get('mode', 'memory')  # No mode = memory-based
-                print(f"   Item {i+1}: id={item.get('id')}, size={item.get('size')}, mode={mode}, type={item.get('type')}")
-        
-        lookups = []
+
         for item in data.get('items', []):
-            # Cribl API: mode="disk" means disk-based, no mode field means memory-based
-            mode = item.get('mode', 'memory')  # Default to memory if mode is absent
+            mode = item.get('mode', 'memory')
             is_memory = mode != 'disk'
-            
+            item_id = item.get('id', '')
+
+            # Detect pack lookups by pattern (works for Search where pack lookups have prefix)
+            pack_name = None
+            detected_pack, _ = parse_pack_lookup(item_id)
+            if detected_pack:
+                pack_name = detected_pack
+
             lookup = {
-                'id': item['id'], 
+                'id': item_id,
                 'size': item.get('size', 0),
-                'inMemory': is_memory  # Convert mode to inMemory boolean
+                'inMemory': is_memory,
+                'pack': pack_name
             }
-            # Log lookup types
-            if is_memory:
-                print(f"   [MEMORY] {item['id']}")
-            else:
-                print(f"   [DISK] {item['id']}")
             lookups.append(lookup)
-        
-        return jsonify({'lookups': lookups})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"[WARNING] Failed to get system lookups: {str(e)}")
+
+    return jsonify({'lookups': lookups})
+
+
+def parse_pack_lookup(lookup_filename, pack_hint=None):
+    """Parse a lookup filename to determine if it's a pack lookup.
+    Returns (pack_name, actual_filename) if pack lookup, or (None, lookup_filename) if system lookup.
+    Pack lookups have format: pack_name.filename.ext (e.g., cribl-search.operators.csv)
+
+    Args:
+        lookup_filename: The full lookup filename (may include pack prefix)
+        pack_hint: Optional pack name if already known (from frontend)
+    """
+    # If pack hint is provided, use it directly
+    if pack_hint:
+        # The filename should start with pack_hint followed by a dot
+        prefix = f"{pack_hint}."
+        if lookup_filename.startswith(prefix):
+            actual_filename = lookup_filename[len(prefix):]
+            return pack_hint, actual_filename
+        return pack_hint, lookup_filename
+
+    parts = lookup_filename.split('.')
+    # Need at least 3 parts: pack_name, filename, extension
+    if len(parts) >= 3:
+        potential_pack = parts[0]
+        # Common pack name patterns:
+        # - Contains hyphen (e.g., cribl-search, cribl-search-aws-vpc-flow-logs)
+        # - Contains underscore (e.g., okta_improbable)
+        # - Known prefixes
+        is_pack_name = (
+            '-' in potential_pack or
+            '_' in potential_pack or
+            potential_pack in ['cribl', 'okta', 'aws', 'azure', 'gcp', 'splunk', 'crowdstrike']
+        )
+        if is_pack_name:
+            pack_name = parts[0]
+            actual_filename = '.'.join(parts[1:])
+            return pack_name, actual_filename
+    return None, lookup_filename
 
 @app.route('/api/lookups/<worker_group>/<lookup_filename>/content', methods=['GET'])
 def get_lookup_content(worker_group, lookup_filename):
-    """Get the raw content of a lookup file"""
+    """Get the raw content of a lookup file (system or pack)"""
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
-    
+
     api_type = request.args.get('api_type', 'stream')
     token = app_config['token']
-    
+
     print(f"\n[FETCH] Getting content for {lookup_filename} from {worker_group} ({api_type})")
-    
+
+    # Check if this is a pack lookup
+    pack_name, actual_filename = parse_pack_lookup(lookup_filename)
+
     try:
-        # Build URL to download the file
-        download_url = build_api_url(api_type, worker_group, 
-                                     path=f'/system/lookups/{lookup_filename}/content', 
-                                     query='raw=1')
-        
-        print(f"   Download URL: {download_url}")
         headers = {"Authorization": f"Bearer {token}"}
-        
+
+        if pack_name and api_type in ['stream', 'edge']:
+            # Pack lookup - use pack endpoint
+            download_url = build_api_url(api_type, worker_group,
+                                         path=f'/packs/{pack_name}/lookups/{actual_filename}/content',
+                                         query='raw=1')
+            print(f"   [PACK] Pack: {pack_name}, File: {actual_filename}")
+        else:
+            # System lookup
+            download_url = build_api_url(api_type, worker_group,
+                                         path=f'/system/lookups/{lookup_filename}/content',
+                                         query='raw=1')
+
+        print(f"   Download URL: {download_url}")
+
         response = requests.get(download_url, headers=headers, timeout=30)
         response.raise_for_status()
-        
+
         # Return the raw content as text
         return response.text, 200, {'Content-Type': 'text/plain'}
-        
+
     except requests.exceptions.HTTPError as e:
         error_msg = f"{e.response.status_code} {e.response.reason}"
         print(f"   [ERROR] {error_msg}")
@@ -998,33 +1074,39 @@ def get_lookup_content(worker_group, lookup_filename):
 
 @app.route('/api/lookups/<worker_group>/<lookup_id>', methods=['GET'])
 def get_lookup_details(worker_group, lookup_id):
-    """Get lookup details including inMemory flag"""
+    """Get lookup details including inMemory flag (system or pack)"""
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
-    
+
     api_type = request.args.get('api_type', 'stream')
     token = app_config['token']
-    
+
     print(f"\n[FETCH] Getting details for {lookup_id} from {worker_group} ({api_type})")
-    
+
+    # Check if this is a pack lookup
+    pack_name, actual_filename = parse_pack_lookup(lookup_id)
+
     try:
-        # Build URL to get lookup details
-        lookup_url = build_api_url(api_type, worker_group, 
-                                   path=f'/system/lookups/{lookup_id}')
-        
-        print(f"   Lookup URL: {lookup_url}")
         headers = {"Authorization": f"Bearer {token}"}
-        
+
+        if pack_name and api_type in ['stream', 'edge']:
+            # Pack lookup - use pack endpoint
+            lookup_url = build_api_url(api_type, worker_group,
+                                       path=f'/packs/{pack_name}/lookups/{actual_filename}')
+            print(f"   [PACK] Pack: {pack_name}, File: {actual_filename}")
+        else:
+            # System lookup
+            lookup_url = build_api_url(api_type, worker_group,
+                                       path=f'/system/lookups/{lookup_id}')
+
+        print(f"   Lookup URL: {lookup_url}")
+
         response = requests.get(lookup_url, headers=headers, timeout=10)
         response.raise_for_status()
-        
+
         lookup_data = response.json()
-        print(f"   [DEBUG] Full lookup data: {json.dumps(lookup_data, indent=2)}")
-        print(f"   [DEBUG] inMemory value: {lookup_data.get('inMemory')}")
-        print(f"   [OK] Lookup type: {'memory-based' if lookup_data.get('inMemory') else 'disk-based'}")
-        
         return jsonify({'success': True, 'lookup': lookup_data}), 200
-        
+
     except requests.exceptions.HTTPError as e:
         error_msg = f"{e.response.status_code} {e.response.reason}"
         print(f"   [ERROR] {error_msg}")
@@ -1105,11 +1187,22 @@ def transfer_lookup():
         else:
             # Step 1: Download from source
             print(f"   [STEP 1] Downloading from source...")
-            # Use FULL filename (with .csv extension) as that's what the Cribl API expects
-            download_url = build_api_url(source_api_type, source_group, 
-                                         path=f'/system/lookups/{lookup_filename}/content', 
-                                         query='raw=1')
-            
+
+            # Check if this is a pack lookup
+            pack_name, actual_filename = parse_pack_lookup(lookup_filename)
+
+            if pack_name and source_api_type in ['stream', 'edge']:
+                # Pack lookup - use pack endpoint
+                download_url = build_api_url(source_api_type, source_group,
+                                             path=f'/packs/{pack_name}/lookups/{actual_filename}/content',
+                                             query='raw=1')
+                print(f"   [PACK] Downloading from pack: {pack_name}, file: {actual_filename}")
+            else:
+                # System lookup
+                download_url = build_api_url(source_api_type, source_group,
+                                             path=f'/system/lookups/{lookup_filename}/content',
+                                             query='raw=1')
+
             print(f"   Download URL: {download_url}")
             headers = {"Authorization": f"Bearer {token}"}
             
@@ -1157,7 +1250,17 @@ def transfer_lookup():
         
         # Step 2: Upload to target (use target filename)
         print(f"   [STEP 2] Uploading to target as {target_filename}...")
-        content_type = "text/csv" if target_filename.endswith('.csv') else "application/gzip"
+        # Set content type based on file extension
+        if target_filename.endswith('.csv'):
+            content_type = "text/csv"
+        elif target_filename.endswith('.mmdb'):
+            content_type = "application/octet-stream"
+        elif target_filename.endswith('.gz'):
+            content_type = "application/gzip"
+        elif target_filename.endswith('.json'):
+            content_type = "application/json"
+        else:
+            content_type = "application/octet-stream"  # Default for binary files
         
         upload_url = build_api_url(target_api_type, target_group, 
                                    path='/system/lookups', 
@@ -1207,7 +1310,7 @@ def transfer_lookup():
         
         # Try POST first (create new)
         payload = {
-            "id": Path(target_filename).stem,  # ID without extension
+            "id": target_filename,  # Full filename WITH extension (Cribl uses this as the ID)
             "fileInfo": {"filename": temp_file_name}
         }
         
@@ -1225,7 +1328,7 @@ def transfer_lookup():
             "Content-Type": "application/json"
         }
         
-        print(f"   Lookup ID: {Path(target_filename).stem}")
+        print(f"   Lookup ID: {target_filename}")
         print(f"   Lookup URL: {lookup_url}")
         
         # Try POST, if it fails with 409 (conflict) or 500 (already exists), try PATCH
@@ -1271,22 +1374,41 @@ def transfer_lookup():
                     print(f"   [OK] Updated existing lookup")
                 except requests.exceptions.HTTPError as patch_error:
                     # Check if it's a mode change error
+                    mode_change_handled = False
                     if patch_error.response.status_code == 400:
                         try:
                             error_data = patch_error.response.json()
                             error_msg = error_data.get('message', '')
                             if 'mode can not be changed' in error_msg.lower():
-                                print(f"   [ERROR] Cannot change lookup mode")
-                                return jsonify({
-                                    'success': False,
-                                    'error': 'Cannot change lookup type',
-                                    'message': f'The lookup "{target_filename}" already exists on the target with a different type. To change from memory-based to disk-based (or vice versa), you must first delete the existing lookup on the target, then transfer again.',
-                                    'action_required': 'delete_first'
-                                }), 400
-                        except:
-                            pass
-                    # Re-raise if not a mode change error
-                    raise patch_error
+                                print(f"   [INFO] Mode change detected - auto-deleting and re-creating lookup")
+
+                                # Delete the existing lookup
+                                delete_url = build_api_url(target_api_type, target_group, path=f'/system/lookups/{target_filename}')
+                                print(f"   [DELETE] Deleting existing lookup: {delete_url}")
+
+                                delete_response = requests.delete(delete_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+                                delete_response.raise_for_status()
+                                print(f"   [OK] Deleted existing lookup")
+
+                                # Now retry the POST to create with new type
+                                print(f"   [RETRY] Re-creating lookup with new type...")
+                                retry_response = requests.post(lookup_url, headers=lookup_headers, json=payload, timeout=10)
+                                retry_response.raise_for_status()
+                                print(f"   [OK] Re-created lookup with new type")
+                                mode_change_handled = True
+                        except requests.exceptions.HTTPError as delete_error:
+                            print(f"   [ERROR] Failed to delete/recreate: {delete_error}")
+                            return jsonify({
+                                'success': False,
+                                'error': f'Failed to change lookup type for "{target_filename}"',
+                                'message': f'Could not delete and recreate lookup: {str(delete_error)}'
+                            }), 400
+                        except Exception as mode_error:
+                            print(f"   [ERROR] Mode change handling failed: {mode_error}")
+
+                    # Re-raise if not a mode change error or mode change wasn't handled
+                    if not mode_change_handled:
+                        raise patch_error
             else:
                 # Some other error
                 print(f"   [ERROR] Error creating lookup: {e.response.status_code} - {e.response.text}")
@@ -1336,13 +1458,27 @@ def transfer_lookup():
                 commit_id = commit_data.get('commit') or commit_data.get('hash', 'unknown')
             
             print(f"   [OK] Committed lookup file: {commit_id}")
-            
+
             # Store the commit ID for the deploy endpoint to use for partial deployment
+            # Use a dict to support bulk transfers to multiple targets
+            if 'transfer_commits' not in app_config:
+                app_config['transfer_commits'] = {}
+
+            # Key by "group:api_type" to support multiple targets
+            commit_key = f"{target_group}:{target_api_type}"
+            app_config['transfer_commits'][commit_key] = {
+                'commit_id': commit_id,
+                'group': target_group,
+                'api_type': target_api_type,
+                'files': [lookup_csv_path, lookup_yml_path]
+            }
+
+            # Also keep the legacy single values for backwards compatibility
             app_config['last_transfer_commit_id'] = commit_id
             app_config['last_transfer_group'] = target_group
             app_config['last_transfer_api_type'] = target_api_type
             app_config['last_transfer_files'] = [lookup_csv_path, lookup_yml_path]
-            
+
             print(f"   [INFO] Use Deploy button to push to workers")
             
         except Exception as commit_error:
@@ -1472,11 +1608,27 @@ def commit_changes():
             commit_id = commit_data.get('commit') or commit_data.get('hash', 'unknown')
         
         print(f"   [SUCCESS] Committed: {commit_id}")
-        
-        # Store the last commit ID for potential use by deploy
+
+        # Store the commit ID in transfer_commits dict for deploy to use
+        if 'transfer_commits' not in app_config:
+            app_config['transfer_commits'] = {}
+
+        commit_key = f"{worker_group}:{api_type}"
+        app_config['transfer_commits'][commit_key] = {
+            'commit_id': commit_id,
+            'group': worker_group,
+            'api_type': api_type,
+            'files': []
+        }
+        print(f"   [INFO] Stored commit for deploy: {commit_key} -> {commit_id}")
+
+        # Also store legacy values
         app_config['last_commit_id'] = commit_id
         app_config['last_commit_group'] = worker_group
-        
+        app_config['last_transfer_commit_id'] = commit_id
+        app_config['last_transfer_group'] = worker_group
+        app_config['last_transfer_api_type'] = api_type
+
         return jsonify({
             'success': True,
             'message': f'Successfully committed {changes_count or pending_count} changes',
@@ -1507,30 +1659,32 @@ def deploy_changes():
     base_url = get_base_url()  # Use helper function
     
     print(f"\n[DEPLOY] Deploying to {worker_group}...")
-    print(f"   [DEBUG] Checking for recent transfer:")
-    print(f"   [DEBUG]   last_transfer_commit_id: {app_config.get('last_transfer_commit_id')}")
-    print(f"   [DEBUG]   last_transfer_group: {app_config.get('last_transfer_group')}")
-    print(f"   [DEBUG]   last_transfer_api_type: {app_config.get('last_transfer_api_type')}")
-    print(f"   [DEBUG]   Requested worker_group: {worker_group}")
-    print(f"   [DEBUG]   Requested api_type: {api_type}")
-    
+
+    # Look up commit ID from transfer_commits dict (supports bulk transfers)
+    commit_key = f"{worker_group}:{api_type}"
+    transfer_commits = app_config.get('transfer_commits', {})
+
     try:
         commit_version = None
-        
-        # CRITICAL: Use the stored commit ID from the most recent transfer (partial deploy)
-        # This ensures we only deploy the transferred lookup, not other uncommitted changes
-        if (app_config.get('last_transfer_commit_id') and 
-            app_config.get('last_transfer_group') == worker_group and
-            app_config.get('last_transfer_api_type') == api_type):
-            commit_version = app_config['last_transfer_commit_id']
-            print(f"   [OK] Using commit ID from most recent transfer: {commit_version}")
+
+        # Check the new dict-based storage first
+        if commit_key in transfer_commits:
+            commit_info = transfer_commits[commit_key]
+            commit_version = commit_info['commit_id']
+            print(f"   [OK] Using commit ID from transfer: {commit_version}")
             print(f"   [PARTIAL] This will deploy ONLY the transferred lookup, not other changes")
+        # Fall back to legacy single value
+        elif (app_config.get('last_transfer_commit_id') and
+              app_config.get('last_transfer_group') == worker_group and
+              app_config.get('last_transfer_api_type') == api_type):
+            commit_version = app_config['last_transfer_commit_id']
+            print(f"   [OK] Using commit ID from legacy storage: {commit_version}")
         else:
             # No recent transfer to this group - cannot do partial deploy
             print(f"   [ERROR] No recent transfer found for {worker_group} ({api_type})")
             print(f"   [ERROR] Deploy button should only be used after transferring a lookup")
             return jsonify({
-                'error': 'No recent transfer to deploy. Please transfer a lookup first.',
+                'error': f'No recent transfer to deploy for {worker_group}. Please transfer a lookup first.',
                 'details': 'Deploy button deploys only the most recently transferred lookup'
             }), 400
         
@@ -1550,9 +1704,14 @@ def deploy_changes():
         
         response = requests.patch(deploy_url, headers=headers, json=deploy_payload, timeout=10)
         response.raise_for_status()
-        
+
         print(f"   [SUCCESS] Deployed: {commit_version}")
-        
+
+        # Clear the commit from storage after successful deploy
+        if commit_key in transfer_commits:
+            del transfer_commits[commit_key]
+            print(f"   [INFO] Cleared commit for {commit_key}")
+
         return jsonify({
             'success': True,
             'message': f'Successfully deployed to {worker_group}',
@@ -1620,9 +1779,7 @@ def delete_lookup(worker_group, lookup_filename):
             status_response = requests.get(status_url, headers=headers, timeout=10)
             status_response.raise_for_status()
             status_data = status_response.json()
-            
-            print(f"   [DEBUG] Status response: {json.dumps(status_data, indent=2)}")
-            
+
             # Try to extract the actual file paths from pending changes
             pending_files = []
             
