@@ -2,7 +2,7 @@
 
 A web-based tool for managing and transferring lookup tables between Cribl Cloud worker groups across Stream, Search, and Edge deployments.
 
-**Version: 1.50** | December 2025
+**Version: 2.0.0** | December 2025
 
 ## Features
 
@@ -276,7 +276,7 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 
 ## Changelog
 
-### Version 1.50 (December 2025)
+### Version 2.0.0 (December 2025)
 - **Large File Protection**: Files over 10MB open in rename-only mode
 - **Table View Default**: Lookup Editor now defaults to table view for CSV files
 - **Search Filter**: Added filter to table view for finding specific rows
