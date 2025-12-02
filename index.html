@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lookup Manager v1.3.0</title>
-    <!-- Version 1.3.0 - December 1, 2025 -->
+    <title>Lookup Manager v1.50</title>
+    <!-- Version 1.50 - December 2, 2025 -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -72,6 +72,71 @@
             background-size: 1.5em 1.5em;
             padding-right: 2.5rem;
         }
+
+        /* Help icon tooltip styles */
+        .help-icon {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .help-tooltip {
+            visibility: hidden;
+            opacity: 0;
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 400;
+            z-index: 1000;
+            transition: opacity 0.2s ease, visibility 0.2s ease;
+            margin-bottom: 8px;
+            width: 220px;
+            white-space: normal;
+            text-align: center;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .help-tooltip::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 6px;
+            border-style: solid;
+        }
+
+        .help-icon:hover .help-tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .help-tooltip-dark {
+            background: #1f2937;
+            color: #e5e7eb;
+            border: 1px solid #374151;
+        }
+
+        .help-tooltip-dark::after {
+            border-color: #1f2937 transparent transparent transparent;
+        }
+
+        .help-tooltip-light {
+            background: #ffffff;
+            color: #374151;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .help-tooltip-light::after {
+            border-color: #ffffff transparent transparent transparent;
+        }
     </style>
 </head>
 <body class="m-0 p-0">
@@ -108,8 +173,10 @@
             // Pack lookup discovery state
             const [availablePacks, setAvailablePacks] = useState([]); // List of packs from /api/packs
             const [selectedPacks, setSelectedPacks] = useState(new Set()); // Packs selected by user
-            const [packLoadingProgress, setPackLoadingProgress] = useState({ current: 0, total: 0, currentPack: '' }); // Progress tracking
+            const [packLoadingProgress, setPackLoadingProgress] = useState({ current: 0, total: 0, currentPack: '' }); // Progress tracking for loading lookups
+            const [packScanProgress, setPackScanProgress] = useState({ current: 0, total: 0, currentPack: '' }); // Progress tracking for pack scanning
             const [packsLoading, setPacksLoading] = useState(false); // Loading pack list
+            const packScanEventSourceRef = useRef(null); // Ref to track current SSE connection
             const [packLookupsLoading, setPackLookupsLoading] = useState(false); // Loading lookups from selected packs
             const [packFilter, setPackFilter] = useState(''); // Filter text for pack list
             const [packSortOrder, setPackSortOrder] = useState('asc'); // 'asc' or 'desc' for alphabetical sort
@@ -141,6 +208,7 @@
             const [committing, setCommitting] = useState(false);
             const [deploying, setDeploying] = useState(false);
             const [commitMessage, setCommitMessage] = useState('');
+            const [activityLog, setActivityLog] = useState({ type: null, message: '', details: [], timestamp: null }); // Activity log for last action
             const [connectedPanelMinimized, setConnectedPanelMinimized] = useState(false);
             const [pendingChanges, setPendingChanges] = useState(0);
             const [currentVersion, setCurrentVersion] = useState(null);
@@ -158,17 +226,20 @@
             const [consoleLogs, setConsoleLogs] = useState([]);
             const [collapsedResults, setCollapsedResults] = useState({});
             const [lookupEditorOpen, setLookupEditorOpen] = useState(true);
-            const [lookupEditorMinimized, setLookupEditorMinimized] = useState(false);
-            const [consoleMinimized, setConsoleMinimized] = useState(false);
-            const [apiCommandsMinimized, setApiCommandsMinimized] = useState(false);
+            const [lookupEditorMinimized, setLookupEditorMinimized] = useState(true);
+            const [consoleMinimized, setConsoleMinimized] = useState(true);
+            const [apiCommandsMinimized, setApiCommandsMinimized] = useState(true);
             const [isDragging, setIsDragging] = useState(false);
             const [uploadedFileName, setUploadedFileName] = useState('');
 
             const [editedLookupName, setEditedLookupName] = useState('');
             const [lookupContent, setLookupContent] = useState('');
             const [isBinaryFile, setIsBinaryFile] = useState(false);
-            const [editorMode, setEditorMode] = useState('text'); // 'text' or 'table'
+            const [isFileTooLarge, setIsFileTooLarge] = useState(false); // Files > 10MB cannot be edited
+            const MAX_EDITABLE_SIZE = 10 * 1024 * 1024; // 10MB
+            const [editorMode, setEditorMode] = useState('table'); // 'text' or 'table'
             const [tableData, setTableData] = useState({ headers: [], rows: [] }); // Parsed CSV data for table mode
+            const [tableFilter, setTableFilter] = useState(''); // Filter for table view
             const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
             const [savedLookupName, setSavedLookupName] = useState('');
             const [savedLookupContent, setSavedLookupContent] = useState('');
@@ -180,6 +251,16 @@
             const [targetVersion, setTargetVersion] = useState(null);
             const [showApiTokenHelp, setShowApiTokenHelp] = useState(false);
             const [showReadme, setShowReadme] = useState(false);
+
+            // Help icon component with tooltip
+            const HelpIcon = ({ tooltip }) => (
+                <span className="help-icon cursor-help">
+                    <i className="fas fa-question-circle text-blue-400 text-sm hover:text-blue-300 transition-colors"></i>
+                    <span className={`help-tooltip ${darkMode ? 'help-tooltip-dark' : 'help-tooltip-light'}`}>
+                        {tooltip}
+                    </span>
+                </span>
+            );
 
             const addConsoleLog = (message, type = 'info') => {
                 const timestamp = new Date().toLocaleTimeString();
@@ -271,11 +352,12 @@
             };
 
             // Check if content looks like CSV (has consistent column count)
-            const isCSVContent = (content) => {
+            // Optional filename parameter for cases where state hasn't updated yet
+            const isCSVContent = (content, filename = null) => {
                 if (!content || !content.trim()) return false;
-                const filename = editedLookupName.toLowerCase();
+                const name = (filename || editedLookupName || '').toLowerCase();
                 // Check file extension
-                if (filename.endsWith('.csv') || filename.endsWith('.csv.gz')) return true;
+                if (name.endsWith('.csv') || name.endsWith('.csv.gz')) return true;
                 // Heuristic: check if first few lines have consistent comma count
                 const lines = content.trim().split('\n').slice(0, 5);
                 if (lines.length < 2) return false;
@@ -345,8 +427,13 @@
 
             useEffect(() => {
                 if (authenticated) {
-                    loadWorkerGroups('source');
-                    loadWorkerGroups('target');
+                    // Only load worker groups for non-Search APIs (Search uses default_search)
+                    if (sourceApiType !== 'search') {
+                        loadWorkerGroups('source');
+                    }
+                    if (targetApiType !== 'search') {
+                        loadWorkerGroups('target');
+                    }
                     // Auto-load session info for CURL commands
                     loadSessionInfo();
                     // Auto-load lookups if Search API is selected (since it auto-selects default_search)
@@ -480,8 +567,8 @@
             };
 
             useEffect(() => {
-                // Reload worker groups when API type changes
-                if (authenticated) {
+                // Reload worker groups when API type changes (skip for Search - it uses default_search)
+                if (authenticated && sourceApiType !== 'search') {
                     loadWorkerGroups('source');
                 }
 
@@ -499,45 +586,66 @@
                 // Auto-select default_search for Search API, clear for others
                 if (sourceApiType === 'search') {
                     setSelectedSourceGroup('default_search');
-                    addConsoleLog('[INFO] Source API changed to Search - loading lookups...', 'info');
+                    if (authenticated) {
+                        addConsoleLog('[INFO] Source API changed to Search - loading lookups...', 'info');
+                    }
                 } else {
                     // Clear the selection when switching away from Search
                     setSelectedSourceGroup('');
-                    addConsoleLog(`[INFO] Source API changed to ${sourceApiType} - please select a worker group`, 'info');
+                    if (authenticated) {
+                        addConsoleLog(`[INFO] Source API changed to ${sourceApiType} - please select a worker group`, 'info');
+                    }
                 }
             }, [sourceApiType]);
 
             useEffect(() => {
-                // Reload worker groups when API type changes
-                if (authenticated) {
+                // Reload worker groups when API type changes (skip for Search - it uses default_search)
+                if (authenticated && targetApiType !== 'search') {
                     loadWorkerGroups('target');
                 }
-                
+
                 // Auto-select default_search for Search API
                 if (targetApiType === 'search') {
                     setSelectedTargetGroup('default_search');
                     setSelectedTargetGroups(new Set());
-                    addConsoleLog('[INFO] Target API changed to Search - auto-selected default_search group', 'info');
+                    if (authenticated) {
+                        addConsoleLog('[INFO] Destination API changed to Search - auto-selected default_search group', 'info');
+                    }
                 } else {
                     // Clear the selection when switching away from Search
                     setSelectedTargetGroup('');
                     setSelectedTargetGroups(new Set());
-                    addConsoleLog(`[INFO] Target API changed to ${targetApiType} - please select worker group(s)`, 'info');
+                    if (authenticated) {
+                        addConsoleLog(`[INFO] Destination API changed to ${targetApiType} - please select worker group(s)`, 'info');
+                    }
                 }
-                
+
                 // Clear pending deployments when target changes (different destination)
-                if (pendingDeployments.length > 0) {
-                    addConsoleLog(`[INFO] Target changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
+                if (pendingDeployments.length > 0 && authenticated) {
+                    addConsoleLog(`[INFO] Destination changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
                     setPendingDeployments([]);
                     setHasTransferredFile(false);
                     setDeploymentComplete(false);
                 }
+
+                // Update commit message to reflect new API type terminology
+                setCommitMessage(prev => {
+                    if (!prev) return prev;
+                    if (targetApiType === 'edge') {
+                        return prev.replace(/Worker Groups?:/g, 'Fleets:').replace(/Fleet:/g, 'Fleets:');
+                    } else if (targetApiType === 'stream') {
+                        return prev.replace(/Fleets?:/g, 'Worker Groups:').replace(/Worker Group:/g, 'Worker Groups:');
+                    } else if (targetApiType === 'search') {
+                        return prev.replace(/Worker Groups?:/g, 'Search:').replace(/Fleets?:/g, 'Search:');
+                    }
+                    return prev;
+                });
             }, [targetApiType]);
 
             useEffect(() => {
-                if (selectedSourceGroup) {
+                if (selectedSourceGroup && authenticated) {
                     loadLookups(sourceApiType, selectedSourceGroup);
-                } else {
+                } else if (!selectedSourceGroup) {
                     // Increment request ID to invalidate any pending requests
                     lookupsRequestId.current += 1;
                     // Clear lookups and loading state when no group is selected
@@ -547,7 +655,7 @@
                     setSelectedLookups(new Set());
                     setLookupTypes({});
                 }
-            }, [selectedSourceGroup, sourceApiType]);
+            }, [selectedSourceGroup, sourceApiType, authenticated]);
 
             useEffect(() => {
                 // Only load status when an actual target group/fleet is selected (not for Search)
@@ -567,7 +675,7 @@
                 // Clear pending deployments when target group changes
                 // Don't clear on initial load (when selectedTargetGroup becomes non-empty from empty)
                 if (pendingDeployments.length > 0) {
-                    addConsoleLog(`[INFO] Target group changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
+                    addConsoleLog(`[INFO] Destination group changed - clearing ${pendingDeployments.length} pending deployment(s)`, 'info');
                     setPendingDeployments([]);
                     setHasTransferredFile(false);
                     setDeploymentComplete(false);
@@ -840,30 +948,91 @@
                 }
             };
 
-            // Load list of available packs (fast - doesn't export them)
+            // Load list of available packs using SSE for real-time progress
             const loadAvailablePacks = async (apiType, group) => {
                 if (!group || apiType === 'search') return;
 
+                // Cancel any existing SSE connection first
+                if (packScanEventSourceRef.current) {
+                    packScanEventSourceRef.current.close();
+                    packScanEventSourceRef.current = null;
+                }
+
+                // Clear the list immediately and reset progress
+                setAvailablePacks([]);
+                setSelectedPacks(new Set());
                 setPacksLoading(true);
+                setPackScanProgress({ current: 0, total: 0, currentPack: '' });
+
+                // Create a unique request ID to prevent stale responses
+                const requestId = Date.now();
+                const currentRequestId = { value: requestId };
+
                 try {
-                    const res = await fetch(`${API_BASE}/api/packs?worker_group=${group}&api_type=${apiType}`);
-                    const data = await res.json();
+                    const eventSource = new EventSource(`${API_BASE}/api/packs/scan?worker_group=${group}&api_type=${apiType}`);
+                    packScanEventSourceRef.current = eventSource;
+                    const foundPacks = [];
 
-                    if (data.error) {
-                        console.warn('Failed to load packs:', data.error);
-                        setAvailablePacks([]);
-                        return;
-                    }
+                    eventSource.onmessage = (event) => {
+                        // Check if this is still the current request
+                        if (packScanEventSourceRef.current !== eventSource) {
+                            eventSource.close();
+                            return;
+                        }
 
-                    setAvailablePacks(data.packs || []);
-                    if (data.packs && data.packs.length > 0) {
-                        addConsoleLog(`[INFO] Found ${data.packs.length} pack(s) available for lookup discovery`, 'info');
-                    }
+                        try {
+                            const data = JSON.parse(event.data);
+
+                            if (data.type === 'progress') {
+                                setPackScanProgress({
+                                    current: data.current,
+                                    total: data.total,
+                                    currentPack: data.currentPack
+                                });
+                            } else if (data.type === 'pack') {
+                                // Add pack as it's found
+                                foundPacks.push({
+                                    id: data.id,
+                                    displayName: data.displayName,
+                                    version: data.version,
+                                    description: data.description,
+                                    lookupCount: data.lookupCount
+                                });
+                                setAvailablePacks([...foundPacks]);
+                            } else if (data.type === 'complete') {
+                                eventSource.close();
+                                packScanEventSourceRef.current = null;
+                                setPacksLoading(false);
+                                setPackScanProgress({ current: 0, total: 0, currentPack: '' });
+                                if (foundPacks.length > 0) {
+                                    addConsoleLog(`[INFO] Found ${foundPacks.length} pack(s) containing lookups`, 'info');
+                                }
+                            } else if (data.type === 'error') {
+                                eventSource.close();
+                                packScanEventSourceRef.current = null;
+                                setPacksLoading(false);
+                                setPackScanProgress({ current: 0, total: 0, currentPack: '' });
+                                console.warn('Pack scan error:', data.message);
+                            }
+                        } catch (e) {
+                            console.warn('Error parsing SSE data:', e);
+                        }
+                    };
+
+                    eventSource.onerror = () => {
+                        eventSource.close();
+                        if (packScanEventSourceRef.current === eventSource) {
+                            packScanEventSourceRef.current = null;
+                            setPacksLoading(false);
+                            setPackScanProgress({ current: 0, total: 0, currentPack: '' });
+                        }
+                    };
                 } catch (error) {
                     console.warn('Error loading packs:', error);
                     setAvailablePacks([]);
-                } finally {
                     setPacksLoading(false);
+                    setPackScanProgress({ current: 0, total: 0, currentPack: '' });
+                    packScanEventSourceRef.current = null;
                 }
             };
 
@@ -997,7 +1166,7 @@
                 }
 
                 if (!sourceGroup || targetGroupsList.length === 0) {
-                    showMessage('Please select source and target groups', 'error');
+                    showMessage('Please select source and destination groups', 'error');
                     return;
                 }
 
@@ -1006,14 +1175,14 @@
                 setBulkTransferProgress({ current: 0, total: totalOperations, results: [], currentTarget: '' });
                 setTransferring(true);
 
-                addConsoleLog(`[BULK TRANSFER] Starting transfer of ${lookupsToTransfer.length} lookups to ${targetGroupsList.length} target(s)...`, 'info');
+                addConsoleLog(`[BULK TRANSFER] Starting transfer of ${lookupsToTransfer.length} ${lookupsToTransfer.length === 1 ? 'lookup' : 'lookups'} to ${targetGroupsList.length} ${targetGroupsList.length === 1 ? 'destination' : 'destinations'}...`, 'info');
 
                 const results = [];
                 let operationCount = 0;
 
                 // Iterate over each target group
                 for (const targetGroup of targetGroupsList) {
-                    addConsoleLog(`[TARGET] Transferring to ${targetGroup}...`, 'info');
+                    addConsoleLog(`[DESTINATION] Transferring to ${targetGroup}...`, 'info');
                     setBulkTransferProgress(prev => ({ ...prev, currentTarget: targetGroup }));
 
                     const targetResults = [];
@@ -1065,31 +1234,11 @@
                         }
                     }
 
-                    // Auto-commit for this target if disk-based lookups were transferred
-                    const diskBasedCount = lookupsToTransfer.filter(id => getLookupType(id) === 'file').length;
+                    // Note: The transfer backend already does a partial commit for each file.
+                    // No additional commit needed here - that would do a FULL commit of everything pending.
                     const targetSuccessCount = targetResults.filter(r => r.success).length;
-
-                    if (diskBasedCount > 0 && targetSuccessCount > 0 && targetApiType !== 'search') {
-                        addConsoleLog(`[COMMIT] Auto-committing to ${targetGroup}...`, 'info');
-                        try {
-                            const commitRes = await fetch(`${API_BASE}/api/commit`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    worker_group: targetGroup,
-                                    api_type: targetApiType,
-                                    commit_message: commitMessage || `Bulk transfer: ${targetSuccessCount} lookups`
-                                })
-                            });
-                            const commitData = await commitRes.json();
-                            if (commitData.success) {
-                                addConsoleLog(`[OK] Committed to ${targetGroup}`, 'success');
-                            } else {
-                                addConsoleLog(`[WARNING] Commit to ${targetGroup} failed: ${commitData.error}`, 'warning');
-                            }
-                        } catch (e) {
-                            addConsoleLog(`[WARNING] Commit to ${targetGroup} error: ${e.message}`, 'warning');
-                        }
+                    if (targetSuccessCount > 0) {
+                        addConsoleLog(`[OK] Transferred ${targetSuccessCount} lookup(s) to ${targetGroup} - partial commit done`, 'success');
                     }
                 }
 
@@ -1105,8 +1254,10 @@
                 const failedFiles = results.filter(r => !r.success);
 
                 if (failCount === 0) {
-                    showMessage(`Successfully transferred ${lookupsToTransfer.length} lookups to ${targetGroupsList.length} target(s). Click Deploy to push live.`, 'success');
+                    showMessage(`Successfully transferred ${lookupsToTransfer.length} ${lookupsToTransfer.length === 1 ? 'lookup' : 'lookups'} to ${targetGroupsList.length} ${targetGroupsList.length === 1 ? 'destination' : 'destinations'}. Click Deploy to push live.`, 'success');
                     addConsoleLog(`[BULK TRANSFER] Complete: ${successCount} operations succeeded. Ready to deploy.`, 'success');
+                    updateActivityLog('success', `Transfer complete: ${successCount} ${successCount === 1 ? 'lookup' : 'lookups'} transferred`,
+                        [`${targetGroupsList.length === 1 ? 'Destination' : 'Destinations'}: ${targetGroupsList.join(', ')}`, `${lookupsToTransfer.length === 1 ? 'File' : 'Files'}: ${lookupsToTransfer.join(', ')}`]);
                 } else {
                     // Show which files failed in the message
                     const failedNames = failedFiles.map(f => f.filename).slice(0, 3).join(', ');
@@ -1117,6 +1268,9 @@
                     failedFiles.forEach(f => {
                         addConsoleLog(`[FAILED] ${f.filename} -> ${f.targetGroup}: ${f.error}`, 'error');
                     });
+                    // Update activity log with failures
+                    const failureDetails = failedFiles.map(f => `${f.filename} -> ${f.targetGroup}: ${f.error}`);
+                    updateActivityLog('error', `Transfer failed: ${failCount} of ${totalOperations} failed`, failureDetails);
                 }
 
                 // Clear selections after transfer
@@ -1359,7 +1513,7 @@
                 const targetGroup = targetApiType === 'search' ? 'default_search' : selectedTargetGroup;
                 
                 if (!targetGroup) {
-                    showMessage('Please select target group first', 'error');
+                    showMessage('Please select destination group first', 'error');
                     return;
                 }
                 
@@ -1421,12 +1575,12 @@
                             : (selectedTargetGroup ? [selectedTargetGroup] : [])));
 
                 if (targetGroupsList.length === 0) {
-                    showMessage('No targets to deploy to', 'error');
+                    showMessage('No destinations to deploy to', 'error');
                     return;
                 }
 
                 setDeploying(true);
-                addConsoleLog(`[DEPLOY] Deploying to ${targetGroupsList.length} target(s)...`, 'info');
+                addConsoleLog(`[DEPLOY] Deploying to ${targetGroupsList.length} ${targetGroupsList.length === 1 ? 'destination' : 'destinations'}...`, 'info');
 
                 let successCount = 0;
                 let failCount = 0;
@@ -1459,9 +1613,13 @@
                 }
 
                 if (failCount === 0) {
-                    showMessage(`Deployed to ${successCount} target(s)`, 'success');
+                    showMessage(`Deployed to ${successCount} ${successCount === 1 ? 'destination' : 'destinations'}`, 'success');
+                    updateActivityLog('success', `Deployment complete: ${successCount} ${successCount === 1 ? 'destination' : 'destinations'}`,
+                        [`${targetGroupsList.length === 1 ? 'Destination' : 'Destinations'}: ${targetGroupsList.join(', ')}`]);
                 } else {
-                    showMessage(`Deployed to ${successCount}/${targetGroupsList.length} targets (${failCount} failed)`, 'warning');
+                    showMessage(`Deployed to ${successCount}/${targetGroupsList.length} destinations (${failCount} failed)`, 'warning');
+                    updateActivityLog('warning', `Deployment partial: ${successCount}/${targetGroupsList.length} succeeded`,
+                        [`${failCount} ${failCount === 1 ? 'destination' : 'destinations'} failed to deploy`]);
                 }
 
                 // Mark deployment as complete
@@ -1551,7 +1709,24 @@
 
             const handleFileUpload = (file) => {
                 if (!file) return;
-                
+
+                const isTooLarge = file.size > MAX_EDITABLE_SIZE;
+                setIsFileTooLarge(isTooLarge);
+                setIsBinaryFile(false);
+
+                if (isTooLarge) {
+                    // Large files can only be renamed, not edited
+                    setLookupContent('');
+                    setSavedLookupContent('');
+                    setEditedLookupName(file.name);
+                    setSavedLookupName(file.name);
+                    setUploadedFileName(file.name);
+                    setLookupEditorOpen(true);
+                    addConsoleLog(`[UPLOAD] File too large to edit: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) - rename only`, 'warning');
+                    showMessage(`File too large to edit (${(file.size / 1024 / 1024).toFixed(1)}MB) - rename only`, 'warning');
+                    return;
+                }
+
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const content = e.target.result;
@@ -1561,6 +1736,13 @@
                     setSavedLookupName(file.name);
                     setUploadedFileName(file.name);
                     setLookupEditorOpen(true);
+                    // Parse CSV for table view (default mode)
+                    // Pass filename explicitly since state hasn't updated yet
+                    if (isCSVContent(content, file.name)) {
+                        const parsed = parseCSV(content);
+                        setTableData(parsed);
+                    }
+                    setTableFilter(''); // Clear filter when loading new file
                     addConsoleLog(`[UPLOAD] Loaded file: ${file.name} (${content.length} chars)`, 'success');
                     showMessage(`Uploaded ${file.name}`, 'success');
                 };
@@ -1687,17 +1869,27 @@
                                     if (deployData.success) {
                                         addConsoleLog(`[OK] Deletion deployed to workers (partial deploy - only this change)`, 'success');
                                         showMessage('Deleted and deployed', 'success');
+                                        updateActivityLog('success', `Deleted and deployed: ${selectedLookup}`,
+                                            [`Source: ${sourceGroup}`]);
                                     } else {
                                         addConsoleLog(`[WARNING] Auto-deploy failed: ${deployData.error}`, 'warning');
                                         showMessage(`Deleted but deploy failed: ${deployData.error}`, 'warning');
+                                        updateActivityLog('warning', `Deleted but deploy failed: ${selectedLookup}`,
+                                            [`Error: ${deployData.error}`]);
                                     }
                                 } catch (deployError) {
                                     addConsoleLog(`[WARNING] Auto-deploy error: ${deployError.message}`, 'warning');
                                     showMessage('Deleted but deploy failed', 'warning');
+                                    updateActivityLog('warning', `Deleted but deploy failed: ${selectedLookup}`,
+                                        [`Error: ${deployError.message}`]);
                                 }
+                            } else {
+                                // Search doesn't need deployment
+                                updateActivityLog('success', `Deleted: ${selectedLookup}`,
+                                    [`Source: ${sourceGroup}`]);
                             }
                         }
-                        
+
                         setSelectedLookup('');
                         setSavedLookupName('');
                         setSavedLookupContent('');
@@ -1706,10 +1898,14 @@
                     } else {
                         addConsoleLog(`[ERROR] Delete failed: ${data.error || 'Unknown error'}`, 'error');
                         showMessage(data.error || 'Delete failed', 'error');
+                        updateActivityLog('error', `Delete failed: ${selectedLookup}`,
+                            [`Error: ${data.error || 'Unknown error'}`]);
                     }
                 } catch (error) {
                     addConsoleLog(`[ERROR] Delete error: ${error.message}`, 'error');
                     showMessage('Delete error', 'error');
+                    updateActivityLog('error', `Delete error: ${selectedLookup}`,
+                        [`Error: ${error.message}`]);
                 }
             };
 
@@ -1761,6 +1957,16 @@
             const showMessage = (text, type) => {
                 setMessage({ text, type });
                 setTimeout(() => setMessage(null), 5000);
+            };
+
+            // Update activity log with latest action result
+            const updateActivityLog = (type, message, details = []) => {
+                setActivityLog({
+                    type, // 'success', 'error', 'warning', 'info'
+                    message,
+                    details, // Array of detail strings (e.g., failed items)
+                    timestamp: new Date()
+                });
             };
 
             const testConnection = async () => {
@@ -2102,11 +2308,14 @@
                                 <div className="grid lg:grid-cols-2 gap-4 items-stretch">
                                     {/* LEFT: Source */}
                                     <div className={`${cardClass} rounded-xl p-4 flex flex-col`}>
-                                        <div className="flex items-center space-x-2 pb-2 mb-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-300'}">
-                                            <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-900' : 'bg-blue-100'}`}>
-                                                <i className={`fas fa-database text-sm ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}></i>
+                                        <div className="flex items-center justify-between pb-2 mb-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-300'}">
+                                            <div className="flex items-center space-x-2">
+                                                <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-blue-900' : 'bg-blue-100'}`}>
+                                                    <i className={`fas fa-database text-sm ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}></i>
+                                                </div>
+                                                <h3 className={`text-base font-bold ${textClass}`}>Source</h3>
                                             </div>
-                                            <h3 className={`text-base font-bold ${textClass}`}>Source</h3>
+                                            <HelpIcon tooltip="Select the source environment (Search, Stream, or Edge) and worker group or fleet to browse and select lookup files for transfer." />
                                         </div>
 
                                         <div className="space-y-2 flex-1">
@@ -2209,12 +2418,68 @@
                                                             <i className="fas fa-spinner fa-spin ml-2 text-blue-500"></i>
                                                         )}
                                                     </label>
-                                                    {lookups.length > 0 && (
-                                                        <div className="flex space-x-1">
-                                                            <button onClick={selectAllLookups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>All</button>
-                                                            <button onClick={deselectAllLookups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>None</button>
-                                                        </div>
-                                                    )}
+                                                    <div className="flex space-x-1">
+                                                        {lookups.length > 0 && (
+                                                            <>
+                                                                <button onClick={selectAllLookups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>All</button>
+                                                                <button onClick={deselectAllLookups} className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>None</button>
+                                                            </>
+                                                        )}
+                                                        <button
+                                                            onClick={() => {
+                                                                const group = sourceApiType === 'search' ? 'default_search' : selectedSourceGroup;
+                                                                if (group) {
+                                                                    setLookups([]);
+                                                                    setSelectedLookups(new Set());
+                                                                    setSelectedLookup('');
+                                                                    loadLookups(sourceApiType, group);
+                                                                }
+                                                            }}
+                                                            disabled={lookupsLoading || (!selectedSourceGroup && sourceApiType !== 'search')}
+                                                            className={`px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-blue-700 hover:bg-blue-600 text-blue-200 disabled:bg-gray-700 disabled:text-gray-500' : 'bg-blue-200 hover:bg-blue-300 text-blue-700 disabled:bg-gray-200 disabled:text-gray-400'}`}
+                                                            title="Refresh lookup list"
+                                                        >
+                                                            <i className={`fas fa-sync-alt ${lookupsLoading ? 'fa-spin' : ''}`}></i>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => {
+                                                                // Only remove pack lookups, keep system lookups
+                                                                const systemLookups = lookups.filter(l => !l.pack);
+                                                                const packLookupsRemoved = lookups.length - systemLookups.length;
+                                                                setLookups(systemLookups);
+                                                                // Clear selections that were pack lookups
+                                                                setSelectedLookups(prev => {
+                                                                    const newSet = new Set();
+                                                                    prev.forEach(id => {
+                                                                        if (systemLookups.some(l => l.id === id)) {
+                                                                            newSet.add(id);
+                                                                        }
+                                                                    });
+                                                                    return newSet;
+                                                                });
+                                                                // Clear selected lookup if it was a pack lookup
+                                                                if (selectedLookup && !systemLookups.some(l => l.id === selectedLookup)) {
+                                                                    setSelectedLookup('');
+                                                                }
+                                                                // Reset pack selections for Stream/Edge
+                                                                if (sourceApiType !== 'search') {
+                                                                    setSelectedPacks(new Set());
+                                                                    setPackLoadingProgress({ current: 0, total: 0, currentPack: '' });
+                                                                }
+                                                                if (packLookupsRemoved > 0) {
+                                                                    addConsoleLog(`[INFO] Cleared ${packLookupsRemoved} pack lookup(s) from list`, 'info');
+                                                                }
+                                                            }}
+                                                            disabled={lookupsLoading || !lookups.some(l => l.pack)}
+                                                            className={`relative group px-1.5 py-0.5 text-xs rounded ${darkMode ? 'bg-red-800 hover:bg-red-700 text-red-200 disabled:bg-gray-700 disabled:text-gray-500' : 'bg-red-100 hover:bg-red-200 text-red-700 disabled:bg-gray-200 disabled:text-gray-400'}`}
+                                                        >
+                                                            <i className="fas fa-times"></i>
+                                                            <div className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs rounded whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 ${darkMode ? 'bg-gray-800 text-gray-200 border border-gray-600' : 'bg-white text-gray-700 border border-gray-200 shadow-lg'}`}>
+                                                                Remove pack lookups (keeps system lookups)
+                                                                <div className={`absolute top-full left-1/2 -translate-x-1/2 border-4 ${darkMode ? 'border-t-gray-800 border-x-transparent border-b-transparent' : 'border-t-white border-x-transparent border-b-transparent'}`}></div>
+                                                            </div>
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 {/* Loading indicator */}
                                                 {lookupsLoading && (
@@ -2223,8 +2488,38 @@
                                                         <p className={`text-xs ${textSecondaryClass}`}>Loading lookups...</p>
                                                     </div>
                                                 )}
+                                                {/* Pack scanning progress bar for Stream/Edge */}
+                                                {!lookupsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && packsLoading && packScanProgress.total > 0 && (
+                                                    <div className={`p-3 mb-2 text-xs rounded-lg ${darkMode ? 'bg-purple-900 bg-opacity-30 border border-purple-800' : 'bg-purple-50 border border-purple-200'}`}>
+                                                        <div className={`font-semibold mb-2 ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                                                            <i className="fas fa-search mr-1"></i>
+                                                            Scanning Packs for Lookups
+                                                        </div>
+                                                        {/* Progress bar */}
+                                                        <div className={`w-full h-2 rounded-full overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                                                            <div
+                                                                className="h-full bg-purple-500 transition-all duration-300 ease-out"
+                                                                style={{ width: `${(packScanProgress.current / packScanProgress.total) * 100}%` }}
+                                                            ></div>
+                                                        </div>
+                                                        {/* Progress text */}
+                                                        <div className={`mt-2 flex justify-between items-center ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                                                            <span className="truncate max-w-[200px]" title={packScanProgress.currentPack}>
+                                                                <i className="fas fa-cube mr-1"></i>
+                                                                {packScanProgress.currentPack || 'Starting...'}
+                                                            </span>
+                                                            <span>{packScanProgress.current} / {packScanProgress.total}</span>
+                                                        </div>
+                                                        {availablePacks.length > 0 && (
+                                                            <div className={`mt-1 ${darkMode ? 'text-green-400' : 'text-green-600'}`}>
+                                                                <i className="fas fa-check mr-1"></i>
+                                                                Found {availablePacks.length} pack{availablePacks.length !== 1 ? 's' : ''} with lookups
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                                 {/* Pack lookup discovery for Stream/Edge */}
-                                                {!lookupsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && availablePacks.length > 0 && (() => {
+                                                {!lookupsLoading && (sourceApiType === 'stream' || sourceApiType === 'edge') && !packsLoading && availablePacks.length > 0 && (() => {
                                                     // Filter and sort packs
                                                     const filteredPacks = availablePacks
                                                         .filter(pack => {
@@ -2247,7 +2542,7 @@
                                                         <div className="flex items-center justify-between mb-2">
                                                             <div className={`font-semibold ${darkMode ? 'text-purple-300' : 'text-purple-700'}`}>
                                                                 <i className="fas fa-cube mr-1"></i>
-                                                                Pack Lookups ({availablePacks.length} pack{availablePacks.length !== 1 ? 's' : ''} available)
+                                                                Packs Containing Lookups ({availablePacks.length} pack{availablePacks.length !== 1 ? 's' : ''})
                                                             </div>
                                                             <div className="flex space-x-1">
                                                                 <button
@@ -2386,13 +2681,22 @@
                                                 )}
                                                 {/* Source lookup list with read-only type badges */}
                                                 {lookups.length > 0 && (() => {
-                                                    // Filter and sort lookups
+                                                    // Filter and sort lookups: non-pack first (alphabetically), then pack lookups (alphabetically)
                                                     const filteredLookups = lookups
                                                         .filter(l => {
                                                             if (!lookupFilter) return true;
                                                             return l.id.toLowerCase().includes(lookupFilter.toLowerCase());
                                                         })
                                                         .sort((a, b) => {
+                                                            const aIsPack = !!a.pack;
+                                                            const bIsPack = !!b.pack;
+
+                                                            // Non-pack lookups come first
+                                                            if (aIsPack !== bIsPack) {
+                                                                return aIsPack ? 1 : -1;
+                                                            }
+
+                                                            // Within same category, sort alphabetically
                                                             const nameA = a.id.toLowerCase();
                                                             const nameB = b.id.toLowerCase();
                                                             return lookupSortOrder === 'asc'
@@ -2440,7 +2744,7 @@
                                                     ) : (
                                                     <div className={`max-h-80 overflow-y-auto border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
                                                         {filteredLookups.map(l => (
-                                                            <div key={l.id} className={`flex items-center px-2 py-1.5 text-xs ${selectedLookups.has(l.id) ? (darkMode ? 'bg-blue-900 bg-opacity-30' : 'bg-blue-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                                            <div key={l.id} className={`flex items-center px-2 py-0.5 text-xs ${selectedLookups.has(l.id) ? (darkMode ? 'bg-blue-900 bg-opacity-30' : 'bg-blue-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                                                 <input
                                                                     type="checkbox"
                                                                     checked={selectedLookups.has(l.id)}
@@ -2466,8 +2770,8 @@
                                                                 {/* Fixed-width badge area for alignment */}
                                                                 <div className="flex items-center justify-end" style={{ minWidth: '165px' }}>
                                                                     <span className={`text-xs ${textSecondaryClass} mr-1.5`}>({(l.size/1024).toFixed(1)}KB)</span>
-                                                                    <span className={`px-1.5 py-0.5 text-xs rounded w-12 text-center ${l.inMemory ? (darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-700') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-600')}`}>
-                                                                        <i className={`fas ${l.inMemory ? 'fa-bolt' : 'fa-hdd'} mr-1`}></i>
+                                                                    <span className={`px-1.5 py-0.5 text-xs rounded ${l.inMemory ? (darkMode ? 'bg-yellow-900 text-yellow-300' : 'bg-yellow-100 text-yellow-700') : (darkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-600')}`}>
+                                                                        <i className={`fas ${l.inMemory ? 'fa-memory' : 'fa-hdd'} mr-1`}></i>
                                                                         {l.inMemory ? 'Mem' : 'Disk'}
                                                                     </span>
                                                                     {/* Pack badge - fixed width slot */}
@@ -2484,6 +2788,7 @@
                                                                     onClick={async (e) => {
                                                                         e.stopPropagation();
                                                                         const isBinary = l.id.toLowerCase().endsWith('.mmdb') || l.id.toLowerCase().endsWith('.gz');
+                                                                        const isTooLarge = l.size > MAX_EDITABLE_SIZE;
                                                                         try {
                                                                             setEditedLookupName(stripPackPrefix(l.id));
                                                                             setSavedLookupName(stripPackPrefix(l.id));
@@ -2491,18 +2796,30 @@
                                                                             setLookupEditorOpen(true);
                                                                             setLookupEditorMinimized(false);
                                                                             setIsBinaryFile(isBinary);
+                                                                            setIsFileTooLarge(isTooLarge);
 
-                                                                            if (isBinary) {
-                                                                                // Binary files can only be renamed, not edited
+                                                                            if (isBinary || isTooLarge) {
+                                                                                // Binary files and large files can only be renamed, not edited
                                                                                 setLookupContent('');
                                                                                 setSavedLookupContent('');
-                                                                                addConsoleLog(`[INFO] Opened ${l.id} for renaming (binary files cannot be edited)`, 'info');
+                                                                                if (isBinary) {
+                                                                                    addConsoleLog(`[INFO] Opened ${l.id} for renaming (binary files cannot be edited)`, 'info');
+                                                                                } else {
+                                                                                    addConsoleLog(`[INFO] Opened ${l.id} for renaming (file too large to edit: ${(l.size / 1024 / 1024).toFixed(1)}MB)`, 'info');
+                                                                                }
                                                                             } else {
                                                                                 const sourceGroup = sourceApiType === 'search' ? 'default_search' : selectedSourceGroup;
                                                                                 const response = await fetch(`${API_BASE}/api/lookups/${sourceGroup}/${l.id}/content?api_type=${sourceApiType}`);
                                                                                 const text = await response.text();
                                                                                 setLookupContent(text);
                                                                                 setSavedLookupContent(text);
+                                                                                // Parse CSV for table view (default mode)
+                                                                                // Pass filename explicitly since state hasn't updated yet
+                                                                                if (isCSVContent(text, l.id)) {
+                                                                                    const parsed = parseCSV(text);
+                                                                                    setTableData(parsed);
+                                                                                }
+                                                                                setTableFilter(''); // Clear filter when loading new file
                                                                                 addConsoleLog(`[INFO] Loaded lookup file: ${l.id}`, 'info');
                                                                             }
                                                                         } catch (error) {
@@ -2511,7 +2828,7 @@
                                                                         }
                                                                     }}
                                                                     className={`ml-1 p-1 rounded ${darkMode ? 'hover:bg-gray-600 text-gray-400 hover:text-gray-200' : 'hover:bg-gray-200 text-gray-500 hover:text-gray-700'} transition-all`}
-                                                                    title={l.id.toLowerCase().endsWith('.mmdb') || l.id.toLowerCase().endsWith('.gz') ? "Rename before transferring (binary file)" : "Edit content before transferring to destination"}
+                                                                    title={l.id.toLowerCase().endsWith('.mmdb') || l.id.toLowerCase().endsWith('.gz') ? "Rename before transferring (binary file)" : l.size > MAX_EDITABLE_SIZE ? "Rename before transferring (file too large to edit)" : "Edit content before transferring to destination"}
                                                                 >
                                                                     <i className="fas fa-edit text-xs"></i>
                                                                 </button>
@@ -2540,11 +2857,14 @@
 
                                     {/* RIGHT: Destination */}
                                     <div className={`${cardClass} rounded-xl p-4 flex flex-col`}>
-                                        <div className="flex items-center space-x-2 pb-2 mb-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-300'}">
-                                            <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-purple-900' : 'bg-purple-100'}`}>
-                                                <i className={`fas fa-bullseye text-sm ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}></i>
+                                        <div className="flex items-center justify-between pb-2 mb-2 border-b ${darkMode ? 'border-gray-700' : 'border-gray-300'}">
+                                            <div className="flex items-center space-x-2">
+                                                <div className={`p-1.5 rounded-lg ${darkMode ? 'bg-purple-900' : 'bg-purple-100'}`}>
+                                                    <i className={`fas fa-bullseye text-sm ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}></i>
+                                                </div>
+                                                <h3 className={`text-base font-bold ${textClass}`}>Destination</h3>
                                             </div>
-                                            <h3 className={`text-base font-bold ${textClass}`}>Destination</h3>
+                                            <HelpIcon tooltip="Select destination environment and worker group(s) or fleet(s) where lookups will be transferred. Use Transfer to copy files and Deploy to push changes to workers." />
                                         </div>
 
                                         <div className="space-y-2 flex-1">
@@ -2560,15 +2880,6 @@
                                                     <option value="stream">Stream</option>
                                                     <option value="edge">Edge</option>
                                                 </select>
-                                            </div>
-
-                                            <div>
-                                                <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>Default Lookup Type</label>
-                                                <select value={lookupType} onChange={(e) => setLookupType(e.target.value)} className={`w-full px-2 py-1.5 text-sm rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none`}>
-                                                    {targetApiType !== 'search' && <option value="file">💾 Disk-based</option>}
-                                                    <option value="memory">⚡ Memory-based</option>
-                                                </select>
-                                                <p className={`text-xs ${textSecondaryClass} mt-0.5`}>Default for new selections</p>
                                             </div>
 
                                             {modeConflictDetected && (
@@ -2667,7 +2978,7 @@
                                                     ) : (
                                                     <div className={`max-h-32 overflow-y-auto border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
                                                         {filteredTargetGroups.map(g => (
-                                                            <div key={g.id} className={`flex items-center px-2 py-1.5 text-xs ${selectedTargetGroups.has(g.id) ? (darkMode ? 'bg-purple-900 bg-opacity-30' : 'bg-purple-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                                            <div key={g.id} className={`flex items-center px-2 py-0.5 text-xs ${selectedTargetGroups.has(g.id) ? (darkMode ? 'bg-purple-900 bg-opacity-30' : 'bg-purple-50') : ''} hover:${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                                                 <input
                                                                     type="checkbox"
                                                                     checked={selectedTargetGroups.has(g.id)}
@@ -2681,7 +2992,7 @@
                                                     )}
                                                     {selectedTargetGroups.size > 0 && (
                                                         <p className={`text-xs ${darkMode ? 'text-purple-400' : 'text-purple-600'} mt-1`}>
-                                                            <i className="fas fa-check-circle mr-1"></i>{selectedTargetGroups.size} target(s) selected
+                                                            <i className="fas fa-check-circle mr-1"></i>{selectedTargetGroups.size} {selectedTargetGroups.size === 1 ? 'destination' : 'destinations'} selected
                                                         </p>
                                                     )}
                                                 </div>
@@ -2763,6 +3074,55 @@
                                                     placeholder="Enter commit message..."
                                                 />
                                             </div>
+
+                                            {/* Activity Log */}
+                                            {activityLog.timestamp && (
+                                                <div className={`p-2 rounded-lg border ${
+                                                    activityLog.type === 'success'
+                                                        ? (darkMode ? 'bg-green-900 bg-opacity-30 border-green-700' : 'bg-green-50 border-green-200')
+                                                        : activityLog.type === 'error'
+                                                        ? (darkMode ? 'bg-red-900 bg-opacity-30 border-red-700' : 'bg-red-50 border-red-200')
+                                                        : activityLog.type === 'warning'
+                                                        ? (darkMode ? 'bg-yellow-900 bg-opacity-30 border-yellow-700' : 'bg-yellow-50 border-yellow-200')
+                                                        : (darkMode ? 'bg-blue-900 bg-opacity-30 border-blue-700' : 'bg-blue-50 border-blue-200')
+                                                }`}>
+                                                    <div className="flex items-start space-x-2">
+                                                        <i className={`fas ${
+                                                            activityLog.type === 'success' ? 'fa-check-circle text-green-500'
+                                                            : activityLog.type === 'error' ? 'fa-times-circle text-red-500'
+                                                            : activityLog.type === 'warning' ? 'fa-exclamation-triangle text-yellow-500'
+                                                            : 'fa-info-circle text-blue-500'
+                                                        } mt-0.5 flex-shrink-0`}></i>
+                                                        <div className="flex-1 min-w-0 overflow-hidden">
+                                                            <div className="flex flex-wrap items-start justify-between gap-1">
+                                                                <span className={`text-xs font-medium break-words ${
+                                                                    activityLog.type === 'success' ? (darkMode ? 'text-green-300' : 'text-green-700')
+                                                                    : activityLog.type === 'error' ? (darkMode ? 'text-red-300' : 'text-red-700')
+                                                                    : activityLog.type === 'warning' ? (darkMode ? 'text-yellow-300' : 'text-yellow-700')
+                                                                    : (darkMode ? 'text-blue-300' : 'text-blue-700')
+                                                                }`}>{activityLog.message}</span>
+                                                                <span className={`text-[10px] flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                                                    {activityLog.timestamp.toLocaleTimeString()}
+                                                                </span>
+                                                            </div>
+                                                            {activityLog.details.length > 0 && (
+                                                                <div className={`mt-1 text-[10px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                                                    {activityLog.details.slice(0, 3).map((detail, idx) => (
+                                                                        <div key={idx} className="break-words">
+                                                                            <i className="fas fa-angle-right mr-1"></i>{detail}
+                                                                        </div>
+                                                                    ))}
+                                                                    {activityLog.details.length > 3 && (
+                                                                        <div className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                                                            +{activityLog.details.length - 3} more...
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
 
                                             {/* Bulk Transfer Progress */}
                                             {bulkTransferProgress.total > 0 && transferring && (
@@ -2846,12 +3206,13 @@
                                 {/* Lookup Editor Panel */}
                                 <div className={`${cardClass} rounded-xl p-5`}>
                                     <div className={`flex items-center justify-between ${lookupEditorMinimized ? '' : 'mb-3'}`}>
-                                        <h3 className={`text-base font-semibold ${textClass} flex items-center`}>
+                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}>
                                             <i className="fas fa-edit mr-2"></i>
                                             Lookup Editor
                                         </h3>
                                         <div className="flex items-center space-x-2">
-                                            {!lookupEditorMinimized && lookupEditorOpen && (lookupContent || uploadedFileName) && (
+                                            <HelpIcon tooltip="View and edit lookup file contents before transfer. Upload local files, rename lookups, or switch between text and table editing modes for CSV files." />
+                                            {!lookupEditorMinimized && lookupEditorOpen && (lookupContent || uploadedFileName || isBinaryFile || isFileTooLarge) && (
                                                 <>
                                                     {/* Text/Table toggle - only show for CSV files */}
                                                     {!isBinaryFile && isCSVContent(lookupContent) && (
@@ -2945,7 +3306,7 @@
                                         </div>
                                     </div>
 
-                                    {!lookupEditorMinimized && (!lookupContent && !uploadedFileName ? (
+                                    {!lookupEditorMinimized && (!lookupContent && !uploadedFileName && !isBinaryFile && !isFileTooLarge ? (
                                         <>
                                             {/* Upload/Drag-Drop Zone */}
                                             <div 
@@ -3045,13 +3406,15 @@
                                                 )}
                                             </div>
 
-                                            {/* Content Editor or Binary File Notice */}
-                                            {isBinaryFile ? (
+                                            {/* Content Editor or Binary/Large File Notice */}
+                                            {isBinaryFile || isFileTooLarge ? (
                                                 <div className={`p-6 rounded-lg border-2 border-dashed ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-gray-50'} text-center`}>
-                                                    <i className={`fas fa-file-archive text-4xl mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
-                                                    <p className={`text-sm font-medium ${textClass} mb-2`}>Binary File</p>
+                                                    <i className={`fas ${isBinaryFile ? 'fa-file-archive' : 'fa-file-alt'} text-4xl mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                    <p className={`text-sm font-medium ${textClass} mb-2`}>{isBinaryFile ? 'Binary File' : 'Large File'}</p>
                                                     <p className={`text-xs ${textSecondaryClass}`}>
-                                                        MMDB and GZ files cannot be edited directly.<br/>
+                                                        {isBinaryFile
+                                                            ? 'MMDB and GZ files cannot be edited directly.'
+                                                            : 'Files larger than 10MB cannot be edited directly.'}<br/>
                                                         You can rename the file above before transferring.
                                                     </p>
                                                 </div>
@@ -3156,6 +3519,28 @@
                                                                     <p>No CSV data to display. Switch to Text mode to add content.</p>
                                                                 </div>
                                                             ) : (
+                                                                <>
+                                                                {/* Search filter for table */}
+                                                                <div className={`px-2 py-1.5 border-b ${darkMode ? 'border-gray-600 bg-gray-750' : 'border-gray-300 bg-gray-50'}`}>
+                                                                    <div className="relative">
+                                                                        <i className={`fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}></i>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={tableFilter}
+                                                                            onChange={(e) => setTableFilter(e.target.value)}
+                                                                            placeholder="Filter rows..."
+                                                                            className={`w-full pl-7 pr-2 py-1 text-xs rounded border ${inputClass} focus:ring-1 focus:ring-blue-500 focus:outline-none`}
+                                                                        />
+                                                                        {tableFilter && (
+                                                                            <button
+                                                                                onClick={() => setTableFilter('')}
+                                                                                className={`absolute right-2 top-1/2 transform -translate-y-1/2 ${darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}
+                                                                            >
+                                                                                <i className="fas fa-times text-xs"></i>
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
                                                                 <div className="overflow-auto max-h-96">
                                                                     <table className="w-full text-xs">
                                                                         <thead className={`sticky top-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
@@ -3198,10 +3583,13 @@
                                                                             </tr>
                                                                         </thead>
                                                                         <tbody>
-                                                                            {tableData.rows.map((row, rowIdx) => (
-                                                                                <tr key={rowIdx} className={`${darkMode ? 'hover:bg-gray-750' : 'hover:bg-gray-50'}`}>
+                                                                            {tableData.rows
+                                                                                .map((row, originalIdx) => ({ row, originalIdx }))
+                                                                                .filter(({ row }) => !tableFilter || row.some(cell => cell.toLowerCase().includes(tableFilter.toLowerCase())))
+                                                                                .map(({ row, originalIdx }) => (
+                                                                                <tr key={originalIdx} className={`${darkMode ? 'hover:bg-gray-750' : 'hover:bg-gray-50'}`}>
                                                                                     <td className={`px-2 py-1 ${textSecondaryClass} border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} text-center font-mono`}>
-                                                                                        {rowIdx + 1}
+                                                                                        {originalIdx + 1}
                                                                                     </td>
                                                                                     {row.map((cell, colIdx) => (
                                                                                         <td key={colIdx} className={`px-1 py-0.5 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
@@ -3210,7 +3598,7 @@
                                                                                                 value={cell}
                                                                                                 onChange={(e) => {
                                                                                                     const newRows = tableData.rows.map((r, ri) =>
-                                                                                                        ri === rowIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
+                                                                                                        ri === originalIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
                                                                                                     );
                                                                                                     setTableData(prev => ({ ...prev, rows: newRows }));
                                                                                                     setHasUnsavedChanges(true);
@@ -3225,7 +3613,7 @@
                                                                                             onClick={() => {
                                                                                                 setTableData(prev => ({
                                                                                                     ...prev,
-                                                                                                    rows: prev.rows.filter((_, i) => i !== rowIdx)
+                                                                                                    rows: prev.rows.filter((_, i) => i !== originalIdx)
                                                                                                 }));
                                                                                                 setHasUnsavedChanges(true);
                                                                                             }}
@@ -3240,6 +3628,7 @@
                                                                         </tbody>
                                                                     </table>
                                                                 </div>
+                                                                </>
                                                             )}
                                                             {/* Add Row/Column buttons */}
                                                             <div className={`flex items-center space-x-2 mt-3 pt-3 border-t ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
@@ -3284,26 +3673,18 @@
                                 {/* Console */}
                                 <div className={`${cardClass} rounded-2xl p-6`}>
                                     <div className={`flex items-center justify-between ${consoleMinimized ? '' : 'mb-4'}`}>
-                                        <h3 className={`text-lg font-semibold ${textClass} flex items-center`}>
+                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setConsoleMinimized(!consoleMinimized)}>
                                             <i className="fas fa-terminal mr-2"></i>
                                             Console
-                                            {sessionInfo.token ? (
-                                                <span className="ml-2 text-xs text-green-500">
-                                                    <i className="fas fa-check-circle"></i> Ready
-                                                </span>
-                                            ) : (
-                                                <span className="ml-2 text-xs text-gray-500">
-                                                    <i className="fas fa-circle-notch fa-spin"></i> Loading...
-                                                </span>
-                                            )}
                                         </h3>
                                         <div className="flex items-center space-x-2">
+                                            <HelpIcon tooltip="Real-time activity log showing all operations including transfers, commits, deployments, and any errors or warnings." />
                                             {!consoleMinimized && consoleLogs.length > 0 && (
                                                 <button
                                                     onClick={() => setConsoleLogs([])}
                                                     className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-orange-700 hover:bg-orange-600' : 'bg-orange-500 hover:bg-orange-600'} text-white transition-all`}
                                                 >
-                                                    <i className="fas fa-eraser mr-1"></i>Clear Logs
+                                                    <i className="fas fa-eraser mr-1"></i>Clear
                                                 </button>
                                             )}
                                             <button
@@ -3333,14 +3714,15 @@
                                     )}
                                 </div>
 
-                                {/* Recent API Commands */}
+                                {/* curl Commands */}
                                 <div className={`${cardClass} rounded-2xl p-6 shadow-lg`}>
                                     <div className={`flex items-center justify-between ${apiCommandsMinimized ? '' : 'mb-4'}`}>
-                                        <h3 className={`text-lg font-semibold ${textClass} flex items-center`}>
-                                            <i className="fas fa-cog mr-2"></i>
-                                            Recent API Commands
+                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setApiCommandsMinimized(!apiCommandsMinimized)}>
+                                            <i className="fas fa-code mr-2"></i>
+                                            curl Commands
                                         </h3>
                                         <div className="flex items-center space-x-2">
+                                            <HelpIcon tooltip="curl equivalents of API calls made to Cribl Cloud. Copy and run these commands in your terminal to replicate operations." />
                                             {!apiCommandsMinimized && (
                                                 <>
                                                     <button
@@ -3351,12 +3733,12 @@
                                                         <i className={`fas ${showSensitive ? 'fa-eye-slash' : 'fa-eye'} mr-1`}></i>
                                                         {showSensitive ? 'Hide' : 'Show'}
                                                     </button>
-                                                    {Object.keys(testResults).length > 0 && (
+                                                    {(commandHistory.length > 0 || Object.keys(testResults).length > 0) && (
                                                         <button
                                                             onClick={() => { setTestResults({}); setCommandHistory([]); }}
-                                                            className="px-3 py-1.5 text-xs rounded-lg font-semibold bg-red-700 hover:bg-red-600 text-white transition-all"
+                                                            className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-orange-700 hover:bg-orange-600' : 'bg-orange-500 hover:bg-orange-600'} text-white transition-all`}
                                                         >
-                                                            <i className="fas fa-trash mr-1"></i>Clear All
+                                                            <i className="fas fa-eraser mr-1"></i>Clear
                                                         </button>
                                                     )}
                                                     <button
@@ -3439,22 +3821,6 @@
                             </div>
                         )}
                     </div>
-
-                    {/* Footer */}
-                    <footer className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-t mt-12`}>
-                        <div className="container mx-auto px-6 py-6">
-                            <div className="flex items-center justify-between">
-                                <p className={textSecondaryClass}>
-                                    <i className="fas fa-code mr-2"></i>
-                                    Cribl Lookup Manager
-                                </p>
-                                <p className={textSecondaryClass}>
-                                    <i className="fas fa-heart text-red-500 mr-2"></i>
-                                    Built with React & Flask
-                                </p>
-                            </div>
-                        </div>
-                    </footer>
 
                     {/* API Token Help Modal */}
                     {showApiTokenHelp && (
