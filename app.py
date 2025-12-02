@@ -3,10 +3,51 @@
 Cribl Lookup Manager - Backend Server
 Version: 1.50
 Date: December 2, 2025
+
+This Flask application serves as a backend proxy for the Cribl Cloud API,
+enabling users to manage and transfer lookup files between different
+Cribl Cloud worker groups (Stream, Edge) and Search deployments.
+
+Key Features:
+- OAuth authentication with Cribl Cloud
+- List and transfer lookup files between worker groups
+- Support for Stream, Search, and Edge API types
+- Pack lookup discovery and extraction from .crbl files
+- Automatic commit and selective deployment
+- Support for both memory-based and disk-based lookups
+
+Architecture:
+- Flask web server serving both the API and static HTML frontend
+- Direct proxy to Cribl Cloud API with authentication handling
+- Server-Sent Events (SSE) for streaming pack scan progress
+- Temporary file handling for lookup transfers
+
+Security Features:
+- CORS restricted to localhost origins
+- Input validation for all user-supplied parameters
+- Security headers (X-Frame-Options, CSP, etc.)
+- Path traversal protection for filenames
+
+API Endpoints:
+- /api/auth/login, /logout, /status - Authentication management
+- /api/worker-groups - List worker groups/fleets
+- /api/lookups - List and manage lookup files
+- /api/packs - List and scan packs for lookups
+- /api/transfer - Transfer lookups between groups
+- /api/commit, /api/deploy - Version control operations
 """
 
-# Set to True to enable verbose debug logging
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# Set to True to enable verbose debug logging to console
+# When False, only essential startup/error messages are printed
 DEBUG_MODE = False
+
+# =============================================================================
+# IMPORTS - Standard Library
+# =============================================================================
 import sys
 import subprocess
 import importlib.util
@@ -15,6 +56,9 @@ import webbrowser
 import threading
 import time
 
+# =============================================================================
+# DEPENDENCY MANAGEMENT
+# =============================================================================
 # Check and install dependencies
 def check_install_package(package_name, import_name=None):
     """Check if a package is installed, if not ask to install it"""
@@ -60,7 +104,9 @@ if not all_installed:
 
 print("[OK] All dependencies are installed!\n")
 
-# Now import Flask modules
+# =============================================================================
+# IMPORTS - Third Party (after dependency check)
+# =============================================================================
 from flask import Flask, request, jsonify, send_file, Response
 from flask_cors import CORS
 import requests
@@ -75,10 +121,19 @@ import tempfile
 from datetime import datetime
 import re
 
+# =============================================================================
+# LOGGING UTILITIES
+# =============================================================================
+
 # Debug logging helper - only prints if DEBUG_MODE is True
 def debug_log(message):
+    """Print debug message only if DEBUG_MODE is enabled."""
     if DEBUG_MODE:
         print(message)
+
+# =============================================================================
+# FLASK APPLICATION SETUP
+# =============================================================================
 
 app = Flask(__name__)
 
@@ -159,7 +214,12 @@ def sanitize_url_for_logging(url):
     url = re.sub(r'(Bearer\s+)[a-zA-Z0-9\-_\.]+', r'\1***', url)
     return url
 
-# Global config storage
+# =============================================================================
+# GLOBAL APPLICATION STATE
+# =============================================================================
+
+# Global config storage - holds authentication state and session data
+# This is stored in memory and cleared on server restart
 app_config = {
     'authenticated': False,
     'token': None,
@@ -187,18 +247,32 @@ def add_security_headers(response):
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     return response
 
+# =============================================================================
+# STATIC FILE ROUTES
+# =============================================================================
+
 @app.route('/')
 def index():
-    """Serve the main application page"""
+    """Serve the main application page (React frontend)."""
     return send_file('index.html')
 
 @app.route('/cribl-logo.svg')
 def serve_logo():
-    """Serve the Cribl logo SVG file"""
+    """Serve the Cribl logo SVG file."""
     return send_file('cribl-logo.svg', mimetype='image/svg+xml')
 
+# =============================================================================
+# CONFIGURATION AND AUTHENTICATION HELPERS
+# =============================================================================
+
 def load_config_file():
-    """Load config.ini if it exists"""
+    """
+    Load credentials from config.ini file if it exists.
+
+    Returns:
+        dict: Configuration with client_id, client_secret, organization_id
+        None: If config file doesn't exist or is incomplete
+    """
     config_path = Path('config.ini')
     if config_path.exists():
         config = configparser.ConfigParser()
@@ -212,7 +286,19 @@ def load_config_file():
     return None
 
 def get_bearer_token(client_id, client_secret):
-    """Obtain OAuth bearer token"""
+    """
+    Obtain OAuth bearer token from Cribl Cloud authentication service.
+
+    Args:
+        client_id: OAuth client ID from Cribl Cloud API credentials
+        client_secret: OAuth client secret from Cribl Cloud API credentials
+
+    Returns:
+        str: Bearer token for API authentication
+
+    Raises:
+        Exception: If authentication fails
+    """
     url = "https://login.cribl.cloud/oauth/token"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -230,7 +316,12 @@ def get_bearer_token(client_id, client_secret):
         raise Exception(f"Failed to obtain bearer token: {str(e)}")
 
 def get_api_base_url(api_type, organization_id):
-    """Get the appropriate API base URL based on API type"""
+    """
+    Get the appropriate API base URL based on API type.
+
+    Note: This function returns the centralized app.cribl.cloud URL format,
+    but for direct tenant URLs, use get_base_url() instead.
+    """
     if api_type == 'search':
         return f"https://app.cribl.cloud/organizations/{organization_id}/workspaces/main/app/api/v1"
     elif api_type == 'stream':
@@ -240,9 +331,18 @@ def get_api_base_url(api_type, organization_id):
     else:
         return f"https://app.cribl.cloud/organizations/{organization_id}/workspaces/main/app/api/v1"
 
+# =============================================================================
+# DIAGNOSTIC AND TESTING ENDPOINTS
+# =============================================================================
+
 @app.route('/api/test-connection', methods=['GET'])
 def test_connection():
-    """Test connectivity to Cribl Cloud"""
+    """
+    Test connectivity to Cribl Cloud services.
+
+    Tests DNS resolution, HTTPS connectivity, and OAuth endpoint availability.
+    Useful for troubleshooting connection issues.
+    """
     results = {}
     
     # Get the actual base URL if we have one from login
@@ -279,7 +379,12 @@ def test_connection():
 
 @app.route('/api/discover-api-paths', methods=['GET'])
 def discover_api_paths():
-    """Try to discover the correct API paths for the deployment"""
+    """
+    Try to discover the correct API paths for the deployment.
+
+    Tests multiple URL patterns to find working API endpoints.
+    Useful when API paths vary between deployment types.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -460,9 +565,13 @@ def discover_pack_lookups():
 
     return jsonify(results)
 
+# =============================================================================
+# AUTHENTICATION ENDPOINTS
+# =============================================================================
+
 @app.route('/api/config', methods=['GET'])
 def get_config():
-    """Check if config file exists and return config"""
+    """Check if config file exists and return non-sensitive config data."""
     config = load_config_file()
     if config and all(config.values()):
         return jsonify({
@@ -475,7 +584,12 @@ def get_config():
 
 @app.route('/api/session-info', methods=['GET'])
 def get_session_info():
-    """Get current session info including token and base URL"""
+    """
+    Get current session info including token and base URL.
+
+    Returns the bearer token and base URL needed for the frontend
+    to construct curl commands for debugging purposes.
+    """
     if not app_config['authenticated']:
         debug_log("   [ERROR] Session info request - not authenticated")
         return jsonify({'error': 'Not authenticated'}), 401
@@ -500,7 +614,18 @@ def get_session_info():
 
 
 def extract_org_id_and_base_url(org_input):
-    """Extract organization ID and determine base URL from input"""
+    """
+    Extract organization ID and determine base URL from user input.
+
+    Supports multiple input formats:
+    - Direct tenant URL: main-org-name.cribl.cloud
+    - Full URL: https://main-org-name.cribl.cloud/
+    - Centralized URL: https://app.cribl.cloud/organizations/org-id/...
+    - Just the org ID: org-name
+
+    Returns:
+        tuple: (org_id, base_url, is_direct_tenant)
+    """
     if not org_input:
         return None, None, False
     
@@ -549,10 +674,17 @@ def extract_org_id_and_base_url(org_input):
     return org_id, base_url, is_direct_tenant
 
 def get_base_url():
-    """Get base URL with proper fallback to organization_id
+    """
+    Get base URL with proper fallback to organization_id.
 
     Returns the correct base URL for API calls. If base_url is not set in app_config,
-    it constructs it from organization_id to avoid using the invalid 'app.cribl.cloud'.
+    it constructs it from organization_id. Handles malformed URLs and cleans up
+    any double-protocol issues.
+
+    This is the primary function for obtaining the base URL throughout the app.
+
+    Returns:
+        str: Base URL like 'https://main-org-name.cribl.cloud'
     """
     base_url = app_config.get('base_url')
 
@@ -598,15 +730,29 @@ def get_base_url():
 
     return base_url
 
+# =============================================================================
+# API URL CONSTRUCTION
+# =============================================================================
+
 def build_api_url(api_type, worker_group=None, path='', query=''):
-    """Build API URL based on tenant type and API type
+    """
+    Build API URL based on tenant type and API type.
 
     Based on Cribl API documentation:
     - Cribl.Cloud: https://{workspace}-{org}.cribl.cloud/api/v1/m/{group}/...
     - On-prem: https://{hostname}:{port}/api/v1/m/{group}/...
 
     Note: Both Stream worker groups AND Edge fleets use /m/{group} for resource access
-    (lookups, pipelines, etc). The /f/ prefix was incorrect.
+    (lookups, pipelines, etc). The /f/ prefix was found to be incorrect.
+
+    Args:
+        api_type: 'stream', 'edge', or 'search'
+        worker_group: Worker group or fleet name (optional)
+        path: Additional path to append (e.g., '/system/lookups')
+        query: Query string without leading '?' (optional)
+
+    Returns:
+        str: Complete API URL
     """
     base_url = get_base_url()  # Use helper function
     is_direct_tenant = app_config.get('is_direct_tenant', False)
@@ -625,7 +771,13 @@ def build_api_url(api_type, worker_group=None, path='', query=''):
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    """Authenticate with Cribl Cloud"""
+    """
+    Authenticate with Cribl Cloud.
+
+    Accepts client_id, client_secret, and organization_id in request body.
+    Falls back to config.ini if credentials not provided in request.
+    Stores authentication state in app_config for subsequent requests.
+    """
     data = request.json
     client_id = data.get('client_id')
     client_secret = data.get('client_secret')
@@ -677,7 +829,16 @@ def login():
 
 @app.route('/api/test-curl', methods=['POST'])
 def test_curl():
-    """Test API endpoint connectivity (secured version)"""
+    """
+    Test API endpoint connectivity.
+
+    Tests multiple API endpoints to verify connectivity:
+    - List worker groups
+    - List lookups (if worker group provided)
+    - Version endpoint
+
+    Used by the frontend's "Test API" feature.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -793,7 +954,7 @@ def test_curl():
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
-    """Clear session data"""
+    """Clear session data and reset authentication state."""
     app_config['authenticated'] = False
     app_config['token'] = None
     app_config['client_id'] = None
@@ -806,15 +967,27 @@ def logout():
 
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
-    """Check authentication status"""
+    """Check authentication status. Returns whether user is authenticated."""
     return jsonify({
         'authenticated': app_config['authenticated'],
         'organization_id': app_config.get('organization_id')
     })
 
+# =============================================================================
+# WORKER GROUP / FLEET ENDPOINTS
+# =============================================================================
+
 @app.route('/api/worker-groups', methods=['GET'])
 def get_worker_groups():
-    """Get list of worker groups"""
+    """
+    Get list of worker groups (Stream) or fleets (Edge).
+
+    Query params:
+    - api_type: 'stream', 'edge', or 'search'
+
+    Returns list of groups with id and name properties.
+    For Search, returns default_search as the only group.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -943,9 +1116,14 @@ def get_worker_groups():
         debug_log(f"   [ERROR] Exception: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+# =============================================================================
+# LOOKUP FILE ENDPOINTS
+# =============================================================================
+
 @app.route('/api/lookups', methods=['GET'])
 def get_lookups():
-    """Get list of lookup files in a worker group.
+    """
+    Get list of system lookup files in a worker group.
 
     Query params:
     - worker_group: Required. The worker group/fleet to query.
@@ -954,6 +1132,8 @@ def get_lookups():
     Note: For Stream/Edge, pack lookups are not included here. Use the
     /api/packs endpoint to list packs, then /api/packs/<pack_id>/lookups
     to get lookups from specific packs.
+
+    For Search, pack lookups appear in /system/lookups with pack prefix.
     """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
@@ -1083,12 +1263,19 @@ def fetch_pack_lookups_internal(worker_group, api_type, token):
     return pack_lookups
 
 
+# =============================================================================
+# PACK LOOKUP ENDPOINTS
+# =============================================================================
+
 @app.route('/api/packs', methods=['GET'])
 def list_packs():
-    """List packs that contain lookup files in a worker group.
+    """
+    List packs that contain lookup files in a worker group.
 
-    For Stream/Edge, checks each pack for lookups via the direct API.
-    Only returns packs that have at least one lookup file.
+    For Stream/Edge, checks each pack for lookups by exporting and parsing
+    the .crbl file. Only returns packs that have at least one lookup file.
+
+    This is a synchronous endpoint - for progress updates, use /api/packs/scan.
     """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
@@ -1665,9 +1852,38 @@ def get_lookup_details(worker_group, lookup_id):
         debug_log(f"   [ERROR] {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+# =============================================================================
+# TRANSFER AND VERSION CONTROL ENDPOINTS
+# =============================================================================
+
 @app.route('/api/transfer', methods=['POST'])
 def transfer_lookup():
-    """Transfer a lookup file from source to target"""
+    """
+    Transfer a lookup file from source to destination worker group.
+
+    This is the main endpoint for copying lookup files between worker groups.
+    It handles:
+    - Downloading content from source (or using edited content if provided)
+    - Uploading to destination
+    - Creating/updating the lookup definition
+    - Automatic commit of the transferred file
+    - Type conversion (disk/memory) including delete+recreate if needed
+
+    Request body:
+    - source_group: Source worker group name
+    - target_group: Destination worker group name
+    - lookup_filename: Name of the lookup file
+    - source_api_type: 'stream', 'edge', or 'search'
+    - target_api_type: 'stream', 'edge', or 'search'
+    - content: Optional - edited content to use instead of downloading
+    - target_filename: Optional - rename the file on transfer
+    - lookup_type: 'file' (disk) or 'memory'
+
+    Returns:
+    - success: Boolean indicating transfer success
+    - committed: Whether auto-commit succeeded
+    - requiresDeploy: Whether deploy is needed (for Stream/Edge)
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2086,7 +2302,12 @@ def transfer_lookup():
 
 @app.route('/api/commit', methods=['POST'])
 def commit_changes():
-    """Commit pending changes for a worker group"""
+    """
+    Commit all pending changes for a worker group.
+
+    Note: This commits ALL pending changes, not just transferred lookups.
+    For selective commits, the transfer endpoint does partial commits automatically.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2195,7 +2416,17 @@ def commit_changes():
 
 @app.route('/api/deploy', methods=['POST'])
 def deploy_changes():
-    """Deploy committed changes to workers"""
+    """
+    Deploy committed changes to workers in a worker group.
+
+    This deploys ONLY the most recently transferred lookup file(s) to avoid
+    accidentally deploying other team members' changes.
+
+    The commit version is stored from the previous transfer operation.
+    If no recent transfer exists for the target group, returns an error.
+
+    Uses PATCH /api/v1/master/groups/{group}/deploy with version parameter.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2289,9 +2520,19 @@ def deploy_changes():
 
 
 
+# =============================================================================
+# DELETE OPERATIONS
+# =============================================================================
+
 @app.route('/api/lookups/<worker_group>/<lookup_filename>', methods=['DELETE'])
 def delete_lookup(worker_group, lookup_filename):
-    """Delete a lookup file from a worker group"""
+    """
+    Delete a lookup file from a worker group.
+
+    Performs a partial commit of only the deletion-related files to avoid
+    committing other pending changes. If partial commit fails, the deletion
+    succeeds but user must commit manually in Cribl UI.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2449,9 +2690,18 @@ def delete_lookup(worker_group, lookup_filename):
         debug_log(f"   [ERROR] {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+# =============================================================================
+# VERSION STATUS ENDPOINTS
+# =============================================================================
+
 @app.route('/api/pending-changes', methods=['GET'])
 def get_pending_changes():
-    """Get count of pending changes for a worker group using version/status endpoint"""
+    """
+    Get count of pending (uncommitted) changes for a worker group.
+
+    Uses the /version/status endpoint to check for modified, created,
+    and deleted files that haven't been committed yet.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2536,7 +2786,12 @@ def get_pending_changes():
 
 @app.route('/api/current-version', methods=['GET'])
 def get_current_version():
-    """Get the current deployed/committed version for a worker group"""
+    """
+    Get the current deployed/committed version for a worker group.
+
+    Returns the commit hash of the currently deployed configuration.
+    Used to display version info in the UI.
+    """
     if not app_config['authenticated']:
         return jsonify({'error': 'Not authenticated'}), 401
     
@@ -2632,8 +2887,12 @@ def get_current_version():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# =============================================================================
+# SERVER STARTUP UTILITIES
+# =============================================================================
+
 def is_port_available(port):
-    """Check if a port is available"""
+    """Check if a port is available for binding."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind(('0.0.0.0', port))
@@ -2643,7 +2902,12 @@ def is_port_available(port):
         return False
 
 def get_available_port(preferred_port=42001):
-    """Get an available port, asking user if preferred port is taken"""
+    """
+    Get an available port, prompting user if preferred port is in use.
+
+    Tries the preferred port first, then searches nearby ports.
+    If no nearby port is available, prompts user for custom port.
+    """
     if is_port_available(preferred_port):
         return preferred_port
     
@@ -2677,7 +2941,12 @@ def get_available_port(preferred_port=42001):
             print("\n\n[EXIT] Exiting...")
             sys.exit(0)
 
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
 if __name__ == '__main__':
+    # Display startup banner
     print("\n" + "="*60)
     print("[SERVER] Cribl Lookup Transfer Server")
     print("="*60)

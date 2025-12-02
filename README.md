@@ -2,38 +2,48 @@
 
 A web-based tool for managing and transferring lookup tables between Cribl Cloud worker groups across Stream, Search, and Edge deployments.
 
+**Version: 1.50** | December 2025
+
 ## Features
 
 ### Core Functionality
-- **Multi-API Support**: Transfer lookups between Cribl Stream, Search, and Edge worker groups
+- **Multi-API Support**: Transfer lookups between Cribl Stream, Search, and Edge worker groups/fleets
 - **Lookup Type Management**: Support for both memory-based and disk-based lookups
-- **Built-in Editor**: Edit lookup content and rename files before transfer
+- **Built-in Editor**: Edit lookup content with text or table view, rename files before transfer
 - **Safe Deployments**: Selective commit and deploy to avoid deploying unrelated changes
 - **Pack Support**: Automatically handles Cribl Pack lookup naming conventions
-- **Type Conversion**: Handle conflicts when changing lookup types (disk ↔ memory)
-- **Auto-Commit**: Automatically commits disk-based lookups to prevent hanging changes
+- **Type Conversion**: Handle conflicts when changing lookup types (disk to memory)
+- **Auto-Commit**: Automatically commits lookups to prevent hanging changes
 - **Real-time Status**: View pending changes, current versions, and deployment status
 
 ### Bulk Transfer
 - **Multi-Lookup Selection**: Select multiple lookup files to transfer at once using checkboxes
-- **Multi-Target Selection**: Transfer to multiple worker groups or fleets simultaneously
-- **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
-- **Bulk Transfer Progress**: Real-time progress indicator showing current operation count and target
-- **Select All / Deselect All**: Quick selection controls for both lookups and target groups
+- **Multi-Destination Selection**: Transfer to multiple worker groups or fleets simultaneously
+- **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup
+- **Bulk Transfer Progress**: Real-time progress indicator showing current operation count and destination
+- **Select All / Deselect All**: Quick selection controls for both lookups and destination groups
 
-### Pack Lookup Discovery (New!)
+### Pack Lookup Discovery
 - **Stream/Edge Pack Lookups**: Discover lookups from installed Cribl Packs in Stream and Edge
 - **Selective Pack Loading**: Choose which packs to load lookups from (no need to export all packs)
 - **Progress Tracking**: Horizontal progress bar shows which pack is being exported
 - **Pack Indicator**: Visual badge showing which lookups come from packs
 - **Fast Initial Load**: System lookups load instantly; pack lookups load on-demand
 
+### Lookup Editor
+- **Text Mode**: Edit raw CSV/text content directly
+- **Table Mode**: Edit CSV files in a spreadsheet-like interface (default)
+- **Search Filter**: Filter table rows by content to find specific entries
+- **Add/Delete Rows and Columns**: Modify table structure directly
+- **Binary File Support**: Handles `.mmdb` and `.gz` files (rename-only mode)
+- **Large File Protection**: Files over 10MB open in rename-only mode to prevent browser issues
+
 ### User Interface
 - **Dark/Light Mode**: Toggle between dark and light themes
-- **Collapsible Panels**: Minimize the Connected panel, Lookup Editor, Console, and API Commands sections
-- **Binary File Support**: Handles `.mmdb` and `.gz` files (rename-only mode, no content editing)
-- **In-App README**: Quick access to documentation via Help button
-- **Improved Typography**: Monospace font styling for better code/data readability
+- **Collapsible Panels**: Minimize the Lookup Editor, Console, and curl Commands sections
+- **Activity Log**: Shows last operation results (transfer, deploy status)
+- **In-App Documentation**: Quick access to docs via Help button
+- **Clickable Headers**: Click panel headers to expand/collapse
 
 ## Prerequisites
 
@@ -101,12 +111,12 @@ python app.py
 
 1. **Select Source**:
    - Choose API type (Stream, Search, or Edge)
-   - Select worker group (or use default_search for Search)
+   - Select worker group or fleet
    - Click on a lookup file from the list
 
-2. **Select Target**:
-   - Choose target API type
-   - Select target worker group
+2. **Select Destination**:
+   - Choose destination API type
+   - Select destination worker group or fleet
    - Choose lookup type (disk-based or memory-based)
 
 3. **Optional: Edit Content**:
@@ -116,71 +126,76 @@ python app.py
 
 4. **Transfer**:
    - Click "Transfer" button
-   - For disk-based lookups, changes are automatically committed
+   - Changes are automatically committed
    - For pack lookups, the pack prefix is automatically stripped
 
 5. **Deploy** (for Stream/Edge only):
    - Click "Deploy" to push changes to workers
    - Deployment is selective - only deploys the transferred lookup
 
-### Bulk Transfer (Multiple Lookups to Multiple Targets)
+### Bulk Transfer (Multiple Lookups to Multiple Destinations)
 
 1. **Select Source**:
    - Choose API type and worker group
    - Use checkboxes to select multiple lookup files
-   - Use "Select All" / "Deselect All" for quick selection
+   - Use "All" / "None" for quick selection
 
-2. **Select Targets**:
-   - Choose target API type
-   - Use checkboxes to select multiple target worker groups or fleets
-   - Use "Select All" / "Deselect All" for quick selection
+2. **Select Destinations**:
+   - Choose destination API type
+   - Use checkboxes to select multiple destination worker groups or fleets
+   - Use "All" / "None" for quick selection
 
 3. **Configure Lookup Types** (Optional):
-   - Click the disk/memory icon next to each selected lookup to override the default type
-   - Each lookup can have its own type setting (disk-based or memory-based)
+   - Click the Mem/Disk badge next to each selected lookup to change its type
+   - Each lookup can have its own type setting
 
 4. **Transfer**:
    - Click "Transfer" button
-   - Watch the progress indicator showing current operation (e.g., "3/12")
+   - Watch the progress indicator showing current operation
    - The commit message automatically reflects the bulk operation details
 
 5. **Deploy**:
    - After bulk transfer completes, click "Deploy" to push all changes
-   - All transferred lookups are deployed to their respective targets
+   - All transferred lookups are deployed to their respective destinations
 
 ### Handling Type Conflicts
 
 If you transfer a lookup with a different type than the existing one:
 
-1. You'll see a conflict resolution dialog
-2. Choose one of:
-   - **Replace**: Delete the old one and transfer with new type (auto-commits deletion)
-   - **Rename**: Transfer with a different name
-   - **Cancel**: Abort the transfer
+1. The tool will automatically:
+   - Delete the existing lookup
+   - Create a new one with the new type
+2. You'll see a log message indicating the mode change
 
 ## Features in Detail
 
 ### Automatic Pack Name Handling
 
-When transferring lookups from Cribl Packs (e.g., `cribl-search-examples-searches.operators.csv`), the tool:
+When transferring lookups from Cribl Packs (e.g., `cribl-search-examples.operators.csv`), the tool:
 - Automatically strips the pack prefix
 - Transfers as the shortened name (e.g., `operators.csv`)
-- Updates the "Ready" status and commit message with the shortened name
+- Updates the status and commit message with the shortened name
 
-### Auto-Commit for Disk-Based Lookups
+### Auto-Commit for Lookups
 
-Disk-based lookups write files to the filesystem and create Git changes. The tool:
-- Detects when a disk-based lookup is transferred
-- Automatically commits the changes with an appropriate message
-- Updates version information
+All lookups (disk-based and memory-based) are automatically committed after transfer. The tool:
+- Commits only the specific lookup files you transferred
+- Avoids accidentally committing other team members' changes
 - Logs warnings if auto-commit fails (manual commit needed)
 
 ### Selective Deployment
 
-The commit and deploy functions are designed to:
-- Only commit/deploy the specific lookup files you transferred
-- Avoid accidentally deploying other team members' uncommitted changes
-- Show pending changes count before deployment
+The deploy function is designed to:
+- Only deploy the specific lookup files you transferred
+- Avoid accidentally deploying other uncommitted changes
+- Show deployment status in the activity log
+
+### Large File Handling
+
+For files over 10MB:
+- The editor opens in "rename-only" mode
+- Content cannot be edited (to prevent browser memory issues)
+- You can still rename the file before transfer
 
 ## File Structure
 
@@ -192,8 +207,9 @@ cribl-lookup-manager/
 ├── config.ini              # Your actual config (gitignored)
 ├── requirements.txt        # Python dependencies
 ├── cribl-logo.svg          # Logo file
-├── .gitignore             # Git ignore rules
-└── README.md              # This file
+├── quickstart.md           # Quick start guide
+├── .gitignore              # Git ignore rules
+└── README.md               # This file
 ```
 
 ## Troubleshooting
@@ -207,10 +223,9 @@ If port 42001 is in use, the application will:
 
 ### Connection Issues
 
-1. Click "Test API Paths..." dropdown in the interface
-2. Select your API type (Stream, Search, or Edge)
-3. The tool will test various API endpoints and show results
-4. Use the successful endpoint pattern for your queries
+1. Expand the Console panel to see detailed API logs
+2. Check the curl Commands panel to see the actual API calls being made
+3. Test API connectivity using the "Test API Paths..." option
 
 ### Authentication Failures
 
@@ -221,7 +236,7 @@ If port 42001 is in use, the application will:
 
 ### Uncommitted Changes
 
-- For disk-based lookups: Auto-commit should handle this
+- Auto-commit should handle most cases
 - If auto-commit fails, check the console logs
 - Manually commit via Cribl UI if needed
 
@@ -235,6 +250,13 @@ To modify:
 1. Backend changes: Edit `app.py`
 2. Frontend changes: Edit `index.html` (React code is in `<script type="text/babel">`)
 3. Restart the server to see changes
+
+### Debug Mode
+
+To enable verbose logging in the backend, edit `app.py` and set:
+```python
+DEBUG_MODE = True
+```
 
 ## Security Notes
 
@@ -254,16 +276,26 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 
 ## Changelog
 
+### Version 1.50 (December 2025)
+- **Large File Protection**: Files over 10MB open in rename-only mode
+- **Table View Default**: Lookup Editor now defaults to table view for CSV files
+- **Search Filter**: Added filter to table view for finding specific rows
+- **Clickable Headers**: Panel headers (Lookup Editor, Console, curl Commands) are now clickable to expand/collapse
+- **Improved Binary File Handling**: Better UI for MMDB and GZ files with clear messaging
+- **Terminology Update**: "Target" renamed to "Destination" throughout the UI
+- **Smart Pluralization**: Messages correctly use singular/plural (1 destination vs 2 destinations)
+- **Reduced Logging**: Production logging is now minimal; enable DEBUG_MODE for verbose output
+- **UI Polish**: Reduced spacing in lists, matching fonts across panels, improved Clear buttons
+
 ### Version 1.3.0 (December 2025)
 - **Pack Lookup Discovery**: Discover lookups from Cribl Packs in Stream/Edge by exporting and parsing `.crbl` files
 - **Bulk Transfer Support**: Transfer multiple lookups to multiple worker groups/fleets simultaneously
-- **Multi-Selection UI**: Checkbox-based selection for lookups and target groups with Select All/Deselect All
+- **Multi-Selection UI**: Checkbox-based selection for lookups and destination groups with Select All/Deselect All
 - **Per-Lookup Type Override**: Set disk-based or memory-based type individually for each lookup in bulk transfers
-- **Bulk Transfer Progress**: Real-time progress indicator with current operation count and target display
-- **Collapsible Panels**: Minimize/expand Connected panel, Lookup Editor, Console, and API Commands sections
+- **Bulk Transfer Progress**: Real-time progress indicator with current operation count and destination display
+- **Collapsible Panels**: Minimize/expand Lookup Editor, Console, and curl Commands sections
 - **Binary File Support**: Handle `.mmdb` and `.gz` files with rename-only mode (no content editing)
 - **In-App Documentation**: Quick access to README via Help button in the UI
-- **Improved Typography**: Better monospace font styling throughout the interface
 - **UI Improvements**: Streamlined layout, better button sizing, and cleaner visual hierarchy
 - **Bug Fixes**: Fixed race conditions and issues with deleting lookup tables and partial deployments
 
