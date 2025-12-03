@@ -60,9 +60,38 @@
             border-top-color: #fff;
             animation: spin 1s ease-in-out infinite;
         }
-        
+
         @keyframes spin {
             to { transform: rotate(360deg); }
+        }
+
+        /* Table horizontal scroll - always show scrollbar */
+        .table-scroll-container {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 transparent;
+        }
+        .table-scroll-container::-webkit-scrollbar {
+            height: 8px;
+            width: 8px;
+        }
+        .table-scroll-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .table-scroll-container::-webkit-scrollbar-thumb {
+            background-color: #4b5563;
+            border-radius: 4px;
+        }
+        .table-scroll-container::-webkit-scrollbar-thumb:hover {
+            background-color: #6b7280;
+        }
+
+        /* Column resize handle */
+        .col-resize-handle {
+            cursor: col-resize;
+            user-select: none;
+        }
+        .col-resize-handle:hover, .col-resize-handle:active {
+            background-color: rgba(59, 130, 246, 0.5);
         }
         
         .select-custom {
@@ -241,6 +270,9 @@
             const [editorMode, setEditorMode] = useState('table'); // 'text' or 'table'
             const [tableData, setTableData] = useState({ headers: [], rows: [] }); // Parsed CSV data for table mode
             const [tableFilter, setTableFilter] = useState(''); // Filter for table view
+            const [columnWidths, setColumnWidths] = useState({}); // Column widths for resizing { colIdx: width }
+            const [columnWrap, setColumnWrap] = useState({}); // Word wrap per column { colIdx: true/false }
+            const [resizingColumn, setResizingColumn] = useState(null); // Currently resizing column index
             const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
             const [savedLookupName, setSavedLookupName] = useState('');
             const [savedLookupContent, setSavedLookupContent] = useState('');
@@ -374,10 +406,56 @@
                 }
             };
 
+            // Analyze columns and auto-configure widths and word wrap
+            const autoConfigureColumns = (parsed) => {
+                if (!parsed.headers || parsed.headers.length === 0) return;
+
+                const newColumnWidths = {};
+                const newColumnWrap = {};
+                const LONG_CONTENT_THRESHOLD = 40; // Characters - enable word wrap if max > this
+                const CHAR_WIDTH = 6.5; // Approximate pixels per character at 10px mono font
+                const HEADER_PADDING = 60; // Extra space for header icons (wrap, delete, resize)
+                const CELL_PADDING = 16; // Padding inside cells
+
+                // First pass: calculate content metrics for each column
+                const columnMetrics = parsed.headers.map((header, colIdx) => {
+                    let maxLen = header.length;
+
+                    // Sample rows to find typical and max content length
+                    parsed.rows.forEach(row => {
+                        const cellLen = (row[colIdx] || '').length;
+                        maxLen = Math.max(maxLen, cellLen);
+                    });
+
+                    return { colIdx, header, maxLen, headerLen: header.length };
+                });
+
+                // Calculate widths - fit to content for short columns, wrap long ones
+                columnMetrics.forEach(({ colIdx, maxLen, headerLen }) => {
+                    // Minimum width based on header + icons
+                    const headerWidth = headerLen * CHAR_WIDTH + HEADER_PADDING;
+
+                    if (maxLen > LONG_CONTENT_THRESHOLD) {
+                        // Long content column - enable word wrap and give generous width
+                        newColumnWrap[colIdx] = true;
+                        // Use a width that allows reasonable wrapping (about 35-45 chars wide)
+                        newColumnWidths[colIdx] = Math.max(headerWidth, 280);
+                    } else {
+                        // Short content column - fit to content
+                        const contentWidth = maxLen * CHAR_WIDTH + CELL_PADDING;
+                        newColumnWidths[colIdx] = Math.max(headerWidth, contentWidth);
+                    }
+                });
+
+                setColumnWidths(newColumnWidths);
+                setColumnWrap(newColumnWrap);
+            };
+
             // Sync text content to table data
             const syncTextToTable = () => {
                 const parsed = parseCSV(lookupContent);
                 setTableData(parsed);
+                autoConfigureColumns(parsed);
             };
 
             // Helper to build real Cribl API URL for command history
@@ -1769,6 +1847,7 @@
                     if (isCSVContent(content, file.name)) {
                         const parsed = parseCSV(content);
                         setTableData(parsed);
+                        autoConfigureColumns(parsed);
                     }
                     setTableFilter(''); // Clear filter when loading new file
                     addConsoleLog(`[UPLOAD] Loaded file: ${file.name} (${content.length} chars)`, 'success');
@@ -1816,6 +1895,34 @@
                         }
                     }
                 }
+            };
+
+            // Column resize handlers for table editor
+            const handleColumnResizeStart = (e, colIdx) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setResizingColumn(colIdx);
+                const startX = e.clientX;
+                const startWidth = columnWidths[colIdx] || 150;
+
+                const handleMouseMove = (moveEvent) => {
+                    const delta = moveEvent.clientX - startX;
+                    const newWidth = Math.max(50, startWidth + delta); // Minimum 50px
+                    setColumnWidths(prev => ({ ...prev, [colIdx]: newWidth }));
+                };
+
+                const handleMouseUp = () => {
+                    setResizingColumn(null);
+                    document.removeEventListener('mousemove', handleMouseMove);
+                    document.removeEventListener('mouseup', handleMouseUp);
+                };
+
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+            };
+
+            const toggleColumnWrap = (colIdx) => {
+                setColumnWrap(prev => ({ ...prev, [colIdx]: !prev[colIdx] }));
             };
 
             const loadTargetVersion = async () => {
@@ -2800,6 +2907,7 @@
                                                                                 if (isCSVContent(text, l.id)) {
                                                                                     const parsed = parseCSV(text);
                                                                                     setTableData(parsed);
+                                                                                    autoConfigureColumns(parsed);
                                                                                 }
                                                                                 setTableFilter(''); // Clear filter when loading new file
                                                                                 addConsoleLog(`[INFO] Loaded lookup file: ${l.id}`, 'info');
@@ -3193,14 +3301,14 @@
 
                                 {/* Lookup Editor Panel */}
                                 <div className={`${cardClass} rounded-xl p-5`}>
-                                    <div className={`flex items-center justify-between ${lookupEditorMinimized ? '' : 'mb-3'}`}>
-                                        <div className="flex items-center flex-1 cursor-pointer" onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}>
-                                            <h3 className={`text-base font-bold ${textClass} flex items-center`}>
-                                                <i className="fas fa-edit mr-2"></i>
-                                                Lookup Editor
+                                    <div className={`flex items-center justify-between ${lookupEditorMinimized ? '' : 'mb-3'} min-w-0`}>
+                                        <div className="flex items-center min-w-0 cursor-pointer" onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}>
+                                            <h3 className={`text-base font-bold ${textClass} flex items-center truncate`}>
+                                                <i className="fas fa-edit mr-2 flex-shrink-0"></i>
+                                                <span className="truncate">Lookup Editor</span>
                                             </h3>
                                         </div>
-                                        <div className="flex items-center space-x-2">
+                                        <div className="flex items-center space-x-2 flex-shrink-0">
                                             <button
                                                 onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}
                                                 className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
@@ -3286,6 +3394,8 @@
                                                             setIsBinaryFile(false);
                                                             setEditorMode('text');
                                                             setTableData({ headers: [], rows: [] });
+                                                            setColumnWidths({});
+                                                            setColumnWrap({});
                                                         }}
                                                         className={`px-3 py-1.5 text-xs rounded-lg font-semibold ${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'} ${textClass} transition-all`}
                                                     >
@@ -3410,16 +3520,16 @@
                                                     </p>
                                                 </div>
                                             ) : (
-                                                <div className="mb-3">
-                                                    <div className="flex items-center justify-between mb-2">
-                                                        <label className={`text-sm font-medium ${textClass}`}>
+                                                <div className="mb-3 min-w-0">
+                                                    <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                                                        <label className={`text-sm font-medium ${textClass} min-w-0`}>
                                                             <i className={`fas ${editorMode === 'table' ? 'fa-table' : 'fa-file-code'} mr-2`}></i>
                                                             Content ({lookupContent.split('\n').length} lines, {lookupContent.length} chars)
                                                             {editorMode === 'table' && tableData.headers.length > 0 && (
                                                                 <span className={`ml-2 ${textSecondaryClass}`}>| {tableData.headers.length} cols, {tableData.rows.length} rows</span>
                                                             )}
                                                         </label>
-                                                        <div className="flex items-center space-x-2">
+                                                        <div className="flex items-center space-x-2 flex-shrink-0">
                                                             {editorMode === 'table' && tableData.headers.length > 0 && (
                                                                 <>
                                                                     <button
@@ -3474,7 +3584,9 @@
                                                                         const text = await navigator.clipboard.readText();
                                                                         setLookupContent(text);
                                                                         if (editorMode === 'table') {
-                                                                            setTableData(parseCSV(text));
+                                                                            const parsed = parseCSV(text);
+                                                                            setTableData(parsed);
+                                                                            autoConfigureColumns(parsed);
                                                                         }
                                                                         showMessage('Pasted from clipboard', 'success');
                                                                     } catch (error) {
@@ -3503,7 +3615,7 @@
 
                                                     {/* Table Editor Mode */}
                                                     {editorMode === 'table' && (
-                                                        <div className={`border rounded-lg overflow-hidden ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
+                                                        <div className={`border rounded-lg overflow-hidden ${darkMode ? 'border-gray-600' : 'border-gray-300'} w-full`}>
                                                             {tableData.headers.length === 0 ? (
                                                                 <div className={`p-8 text-center ${textSecondaryClass}`}>
                                                                     <i className="fas fa-table text-3xl mb-2 opacity-50"></i>
@@ -3532,14 +3644,18 @@
                                                                         )}
                                                                     </div>
                                                                 </div>
-                                                                <div className="overflow-auto max-h-96">
-                                                                    <table className="w-full text-[10px] font-mono">
+                                                                <div className="overflow-x-auto overflow-y-auto max-h-96 table-scroll-container w-full">
+                                                                    <table className="w-full text-[10px] font-mono border-collapse">
                                                                         <thead className={`sticky top-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
                                                                             <tr>
-                                                                                <th className={`px-2 py-1.5 text-left font-semibold ${textSecondaryClass} border-b border-r ${darkMode ? 'border-gray-500' : 'border-gray-400'} w-10`}>#</th>
+                                                                                <th className={`px-2 py-1.5 text-left font-semibold ${textSecondaryClass} border-b border-r ${darkMode ? 'border-gray-500' : 'border-gray-400'}`} style={{ width: '40px', minWidth: '40px' }}>#</th>
                                                                                 {tableData.headers.map((header, colIdx) => (
-                                                                                    <th key={colIdx} className={`px-2 py-1.5 text-left font-semibold ${textClass} border-b border-r ${darkMode ? 'border-gray-500' : 'border-gray-400'}`}>
-                                                                                        <div className="flex items-center space-x-1">
+                                                                                    <th
+                                                                                        key={colIdx}
+                                                                                        className={`py-1.5 text-left font-semibold ${textClass} border-b border-r ${darkMode ? 'border-gray-500' : 'border-gray-400'} relative`}
+                                                                                        style={{ minWidth: columnWidths[colIdx] || 150 }}
+                                                                                    >
+                                                                                        <div className="flex items-center px-2">
                                                                                             <input
                                                                                                 type="text"
                                                                                                 value={header}
@@ -3550,8 +3666,17 @@
                                                                                                     setHasUnsavedChanges(true);
                                                                                                 }}
                                                                                                 className={`flex-1 px-1 py-0.5 text-[10px] font-semibold rounded border-0 bg-transparent focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass} font-mono`}
-                                                                                                style={{ minWidth: '50px' }}
+                                                                                                style={{ minWidth: '30px' }}
                                                                                             />
+                                                                                            <button
+                                                                                                onClick={() => toggleColumnWrap(colIdx)}
+                                                                                                className={`ml-1 px-1 ${columnWrap[colIdx] ? (darkMode ? 'text-blue-400' : 'text-blue-600') : 'opacity-40 hover:opacity-100'} ${darkMode ? 'hover:text-blue-300' : 'hover:text-blue-500'}`}
+                                                                                                title={columnWrap[colIdx] ? "Disable word wrap" : "Enable word wrap"}
+                                                                                            >
+                                                                                                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                                                                                                    <path d="M14 6H4V5h10.5l.5.5v6l-.5.5H7.879l2.07 2.071-.706.707-2.89-2.889v-.707l2.89-2.89.707.707-2 2H14V6z"/>
+                                                                                                </svg>
+                                                                                            </button>
                                                                                             <button
                                                                                                 onClick={() => {
                                                                                                     if (confirm(`Delete column "${header}"?`)) {
@@ -3559,18 +3684,35 @@
                                                                                                             headers: prev.headers.filter((_, i) => i !== colIdx),
                                                                                                             rows: prev.rows.map(row => row.filter((_, i) => i !== colIdx))
                                                                                                         }));
+                                                                                                        // Clean up column settings
+                                                                                                        setColumnWidths(prev => {
+                                                                                                            const newWidths = { ...prev };
+                                                                                                            delete newWidths[colIdx];
+                                                                                                            return newWidths;
+                                                                                                        });
+                                                                                                        setColumnWrap(prev => {
+                                                                                                            const newWrap = { ...prev };
+                                                                                                            delete newWrap[colIdx];
+                                                                                                            return newWrap;
+                                                                                                        });
                                                                                                         setHasUnsavedChanges(true);
                                                                                                     }
                                                                                                 }}
-                                                                                                className="opacity-40 hover:opacity-100 text-red-500"
+                                                                                                className="ml-1 opacity-40 hover:opacity-100 text-red-500"
                                                                                                 title="Delete column"
                                                                                             >
                                                                                                 <i className="fas fa-times text-xs"></i>
                                                                                             </button>
                                                                                         </div>
+                                                                                        {/* Resize handle */}
+                                                                                        <div
+                                                                                            onMouseDown={(e) => handleColumnResizeStart(e, colIdx)}
+                                                                                            className={`absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500 hover:bg-opacity-50 ${resizingColumn === colIdx ? 'bg-blue-500 bg-opacity-50' : ''}`}
+                                                                                            title="Drag to resize column"
+                                                                                        />
                                                                                     </th>
                                                                                 ))}
-                                                                                <th className={`px-2 py-1.5 w-10 border-b ${darkMode ? 'border-gray-500' : 'border-gray-400'}`}></th>
+                                                                                <th className={`px-2 py-1.5 border-b ${darkMode ? 'border-gray-500' : 'border-gray-400'}`} style={{ width: '40px', minWidth: '40px' }}></th>
                                                                             </tr>
                                                                         </thead>
                                                                         <tbody>
@@ -3579,27 +3721,46 @@
                                                                                 .filter(({ row }) => !tableFilter || row.some(cell => cell.toLowerCase().includes(tableFilter.toLowerCase())))
                                                                                 .map(({ row, originalIdx }) => (
                                                                                 <tr key={originalIdx} className={`${darkMode ? 'hover:bg-gray-750' : 'hover:bg-gray-50'}`}>
-                                                                                    <td className={`px-2 py-1 ${textSecondaryClass} border-b border-r ${darkMode ? 'border-gray-600' : 'border-gray-300'} text-center`}>
+                                                                                    <td className={`px-2 py-1 ${textSecondaryClass} border-b border-r ${darkMode ? 'border-gray-600' : 'border-gray-300'} text-center`} style={{ width: '40px', minWidth: '40px' }}>
                                                                                         {originalIdx + 1}
                                                                                     </td>
                                                                                     {row.map((cell, colIdx) => (
-                                                                                        <td key={colIdx} className={`px-1 py-0.5 border-b border-r ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}>
-                                                                                            <input
-                                                                                                type="text"
-                                                                                                value={cell}
-                                                                                                onChange={(e) => {
-                                                                                                    const newRows = tableData.rows.map((r, ri) =>
-                                                                                                        ri === originalIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
-                                                                                                    );
-                                                                                                    setTableData(prev => ({ ...prev, rows: newRows }));
-                                                                                                    setHasUnsavedChanges(true);
-                                                                                                }}
-                                                                                                className={`w-full px-1 py-0.5 text-[10px] rounded border-0 ${darkMode ? 'bg-gray-800' : 'bg-white'} focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass} font-mono`}
-                                                                                                style={{ minWidth: '50px' }}
-                                                                                            />
+                                                                                        <td
+                                                                                            key={colIdx}
+                                                                                            className={`px-1 py-0.5 border-b border-r ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}
+                                                                                            style={{ minWidth: columnWidths[colIdx] || 150 }}
+                                                                                        >
+                                                                                            {columnWrap[colIdx] ? (
+                                                                                                <textarea
+                                                                                                    value={cell}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newRows = tableData.rows.map((r, ri) =>
+                                                                                                            ri === originalIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
+                                                                                                        );
+                                                                                                        setTableData(prev => ({ ...prev, rows: newRows }));
+                                                                                                        setHasUnsavedChanges(true);
+                                                                                                    }}
+                                                                                                    className={`w-full px-1 py-0.5 text-[10px] rounded border-0 ${darkMode ? 'bg-gray-800' : 'bg-white'} focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass} font-mono resize-none`}
+                                                                                                    style={{ minHeight: '24px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+                                                                                                    rows={Math.max(1, Math.ceil(cell.length / 30))}
+                                                                                                />
+                                                                                            ) : (
+                                                                                                <input
+                                                                                                    type="text"
+                                                                                                    value={cell}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newRows = tableData.rows.map((r, ri) =>
+                                                                                                            ri === originalIdx ? r.map((c, ci) => ci === colIdx ? e.target.value : c) : r
+                                                                                                        );
+                                                                                                        setTableData(prev => ({ ...prev, rows: newRows }));
+                                                                                                        setHasUnsavedChanges(true);
+                                                                                                    }}
+                                                                                                    className={`w-full px-1 py-0.5 text-[10px] rounded border-0 ${darkMode ? 'bg-gray-800' : 'bg-white'} focus:ring-1 focus:ring-blue-500 focus:outline-none ${textClass} font-mono`}
+                                                                                                />
+                                                                                            )}
                                                                                         </td>
                                                                                     ))}
-                                                                                    <td className={`px-2 py-1 border-b ${darkMode ? 'border-gray-600' : 'border-gray-300'} text-center`}>
+                                                                                    <td className={`px-2 py-1 border-b ${darkMode ? 'border-gray-600' : 'border-gray-300'} text-center`} style={{ width: '40px', minWidth: '40px' }}>
                                                                                         <button
                                                                                             onClick={() => {
                                                                                                 setTableData(prev => ({
