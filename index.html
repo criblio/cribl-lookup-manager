@@ -2143,52 +2143,6 @@
                                         </p>
                                     </div>
 
-                                    {/* Connection Test Section */}
-                                    {!hasConfig && !authenticated && (
-                                        <div className="mb-6">
-                                            <button
-                                                type="button"
-                                                onClick={testConnection}
-                                                disabled={testingConnection}
-                                                className={`w-full ${darkMode ? 'bg-blue-900 hover:bg-blue-800' : 'bg-blue-100 hover:bg-blue-200'} ${darkMode ? 'text-blue-300' : 'text-blue-700'} py-2 rounded-lg font-medium transition-all flex items-center justify-center space-x-2`}
-                                            >
-                                                {testingConnection ? (
-                                                    <>
-                                                        <div className="spinner w-4 h-4"></div>
-                                                        <span>Testing Connection...</span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <i className="fas fa-network-wired"></i>
-                                                        <span>Test Connection to Cribl Cloud</span>
-                                                    </>
-                                                )}
-                                            </button>
-                                            
-                                            {connectionTest && (
-                                                <div className={`mt-3 p-4 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} text-sm`}>
-                                                    {connectionTest.error ? (
-                                                        <div className="text-red-500">
-                                                            <i className="fas fa-exclamation-triangle mr-2"></i>
-                                                            {connectionTest.error}
-                                                        </div>
-                                                    ) : (
-                                                        <div className="space-y-2">
-                                                            <div className={textClass}>
-                                                                <strong>Connection Test Results:</strong>
-                                                            </div>
-                                                            {Object.entries(connectionTest).map(([key, value]) => (
-                                                                <div key={key} className={textSecondaryClass}>
-                                                                    <strong>{key}:</strong> {value}
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
                                     <form onSubmit={handleLogin} className="space-y-4">
                                         {!hasConfig && (
                                             <>

@@ -120,10 +120,16 @@ import io
 import tempfile
 from datetime import datetime
 import re
+import logging
 
 # =============================================================================
 # LOGGING UTILITIES
 # =============================================================================
+
+# Suppress Flask's default request logging (GET /api/... 200 -)
+# Only show errors, not every HTTP request
+werkzeug_log = logging.getLogger('werkzeug')
+werkzeug_log.setLevel(logging.ERROR)
 
 # Debug logging helper - only prints if DEBUG_MODE is True
 def debug_log(message):
@@ -265,16 +271,75 @@ def serve_logo():
 # CONFIGURATION AND AUTHENTICATION HELPERS
 # =============================================================================
 
-def load_config_file():
+def load_config_from_env():
     """
-    Load credentials from config.ini file if it exists.
+    Load credentials from environment variables.
+
+    Environment variables (more secure than config file):
+        CRIBL_CLIENT_ID - OAuth client ID
+        CRIBL_CLIENT_SECRET - OAuth client secret
+        CRIBL_ORG_ID - Organization ID (tenant name or URL)
 
     Returns:
         dict: Configuration with client_id, client_secret, organization_id
-        None: If config file doesn't exist or is incomplete
+        None: If environment variables are not set
+    """
+    client_id = os.environ.get('CRIBL_CLIENT_ID', '')
+    client_secret = os.environ.get('CRIBL_CLIENT_SECRET', '')
+    org_id = os.environ.get('CRIBL_ORG_ID', '')
+
+    if client_id and client_secret and org_id:
+        return {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'organization_id': org_id
+        }
+    return None
+
+def secure_config_file():
+    """
+    Set restrictive file permissions on config.ini (owner read/write only).
+    This helps protect credentials from other users on shared systems.
     """
     config_path = Path('config.ini')
     if config_path.exists():
+        try:
+            # Set permissions to 600 (owner read/write only)
+            os.chmod(config_path, 0o600)
+            return True
+        except (OSError, PermissionError):
+            # May fail on Windows or if file is owned by another user
+            return False
+    return False
+
+def load_config_file():
+    """
+    Load credentials from environment variables or config.ini file.
+
+    Priority order:
+    1. Environment variables (CRIBL_CLIENT_ID, CRIBL_CLIENT_SECRET, CRIBL_ORG_ID)
+    2. config.ini file
+
+    Environment variables are preferred as they:
+    - Don't persist secrets to disk
+    - Work with secret managers and CI/CD systems
+    - Can't be accidentally committed to git
+
+    Returns:
+        tuple: (config_dict, source_string) where source is 'env' or 'file'
+        (None, None): If no configuration found
+    """
+    # First, try environment variables (more secure)
+    env_config = load_config_from_env()
+    if env_config:
+        return env_config, 'env'
+
+    # Fall back to config.ini file
+    config_path = Path('config.ini')
+    if config_path.exists():
+        # Secure the file permissions
+        secure_config_file()
+
         config = configparser.ConfigParser()
         config.read(config_path)
         if 'cribl' in config:
@@ -282,8 +347,8 @@ def load_config_file():
                 'client_id': config['cribl'].get('client_id', ''),
                 'client_secret': config['cribl'].get('client_secret', ''),
                 'organization_id': config['cribl'].get('organization_id', '')
-            }
-    return None
+            }, 'file'
+    return None, None
 
 def get_bearer_token(client_id, client_secret):
     """
@@ -572,10 +637,11 @@ def discover_pack_lookups():
 @app.route('/api/config', methods=['GET'])
 def get_config():
     """Check if config file exists and return non-sensitive config data."""
-    config = load_config_file()
+    config, source = load_config_file()
     if config and all(config.values()):
         return jsonify({
             'hasConfig': True,
+            'configSource': source,  # 'env' or 'file'
             'config': {
                 'organization_id': config['organization_id']
             }
@@ -783,9 +849,9 @@ def login():
     client_secret = data.get('client_secret')
     organization_id = data.get('organization_id')
     
-    # Try config file first if credentials not provided
+    # Try config file/env vars first if credentials not provided
     if not client_id or not client_secret:
-        config = load_config_file()
+        config, _ = load_config_file()
         if config:
             client_id = config['client_id']
             client_secret = config['client_secret']
@@ -2951,37 +3017,51 @@ if __name__ == '__main__':
     print("[SERVER] Cribl Lookup Transfer Server")
     print("="*60)
     
-    # Check for config file
-    print("\n[CONFIG] Checking for config.ini...")
-    config = load_config_file()
+    # Check for credentials (environment variables or config file)
+    print("\n[CONFIG] Checking for credentials...")
+    config, source = load_config_file()
     if config and all(config.values()):
-        print("[OK] Config file found - auto-login will be available")
+        if source == 'env':
+            print("[OK] Credentials found in environment variables - auto-login will be available")
+        else:
+            print("[OK] Credentials found in config.ini - auto-login will be available")
+            print("     (File permissions secured to owner-only)")
     else:
-        print("[WARN] No config file found - manual login required")
-        print("   Create config.ini from config.ini.sample for auto-login")
+        print("[WARN] No credentials found - manual login required")
+        print("   Option 1: Set environment variables (more secure):")
+        print("             CRIBL_CLIENT_ID, CRIBL_CLIENT_SECRET, CRIBL_ORG_ID")
+        print("   Option 2: Create config.ini from config.ini.template")
     
     # Get available port
+    default_port = 42001
     print("\n[PORT] Checking port availability...")
-    port = get_available_port(42001)
+    port = get_available_port(default_port)
     print(f"[OK] Using port: {port}")
-    
+
     print(f"\n{'='*60}")
     print(f"[OK] Server starting on http://localhost:{port}")
     print(f"{'='*60}")
     print("\n[INFO] Press Ctrl+C to stop the server\n")
-    
-    # Ask about browser BEFORE starting Flask (so its output doesn't interrupt)
+
+    # Browser launch logic
     url = f"http://localhost:{port}"
-    print(f"[INFO] Server will be available at: {url}")
-    response = input("\nWould you like to open this in your browser? (y/n): ").strip().lower()
-    if response == 'y':
-        print("[INFO] Opening browser...")
-        # Open browser in a thread so Flask can start
+    if port == default_port:
+        # Default port available - auto-launch browser
+        print(f"[INFO] Opening browser to {url}...")
         browser_thread = threading.Thread(target=lambda: webbrowser.open(url))
         browser_thread.daemon = True
         browser_thread.start()
     else:
-        print(f"[INFO] You can manually open {url} in your browser anytime.")
+        # Non-default port - ask user
+        print(f"[INFO] Server will be available at: {url}")
+        response = input("\nWould you like to open this in your browser? (y/n): ").strip().lower()
+        if response == 'y':
+            print("[INFO] Opening browser...")
+            browser_thread = threading.Thread(target=lambda: webbrowser.open(url))
+            browser_thread.daemon = True
+            browser_thread.start()
+        else:
+            print(f"[INFO] You can manually open {url} in your browser anytime.")
     
     print("\n" + "="*60)
     print("Starting Flask server...")

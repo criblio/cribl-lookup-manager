@@ -64,18 +64,29 @@ cd cribl-lookup-manager
 pip install -r requirements.txt
 ```
 
-3. Create your configuration file:
+3. Configure credentials (choose one option):
+
+**Option A: Environment Variables (Recommended - More Secure)**
+```bash
+export CRIBL_CLIENT_ID=your_client_id_here
+export CRIBL_CLIENT_SECRET=your_client_secret_here
+export CRIBL_ORG_ID=your_organization_id_here
+```
+
+**Option B: Config File**
 ```bash
 cp config.ini.template config.ini
 ```
 
-4. Edit `config.ini` and add your Cribl Cloud credentials:
+Edit `config.ini` and add your Cribl Cloud credentials:
 ```ini
 [cribl]
 client_id = your_client_id_here
 client_secret = your_client_secret_here
 organization_id = your_organization_id_here
 ```
+
+> **Security Note:** The application automatically sets restrictive file permissions (600) on config.ini to protect your credentials. Environment variables are preferred as they don't persist secrets to disk.
 
 ## Getting Cribl Cloud API Credentials
 

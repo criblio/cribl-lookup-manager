@@ -4,15 +4,21 @@ Get up and running with the Cribl Lookup Manager in 5 minutes.
 
 ## Setup (First Time Only)
 
-### 1. Copy Configuration Template
+### 1. Configure Credentials (Choose One)
 
+**Option A: Environment Variables (More Secure)**
+```bash
+export CRIBL_CLIENT_ID=your_client_id_here
+export CRIBL_CLIENT_SECRET=your_client_secret_here
+export CRIBL_ORG_ID=your_organization_id_here
+```
+
+**Option B: Config File**
 ```bash
 cp config.ini.template config.ini
 ```
 
-### 2. Edit config.ini with Your Cribl Cloud Credentials
-
-Open `config.ini` and replace the placeholder values:
+Edit `config.ini` and replace the placeholder values:
 
 ```ini
 [cribl]
@@ -20,6 +26,8 @@ client_id = your_client_id_here
 client_secret = your_client_secret_here
 organization_id = your_organization_id_here
 ```
+
+> **Tip:** Environment variables are more secure as they don't store secrets in files. The app automatically protects config.ini with restricted file permissions.
 
 **Getting credentials:**
 1. Log in to Cribl Cloud
@@ -32,7 +40,7 @@ organization_id = your_organization_id_here
 - Just the subdomain: `main-amazing-varahamihira`
 - Full URL: `https://main-amazing-varahamihira.cribl.cloud/`
 
-### 3. Install Dependencies
+### 2. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
