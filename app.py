@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Cribl Lookup Manager - Backend Server
-Version: 2.0.0
-Date: December 2, 2025
+Version: 2.0.1
+Date: December 3, 2025
 
 This Flask application serves as a backend proxy for the Cribl Cloud API,
 enabling users to manage and transfer lookup files between different

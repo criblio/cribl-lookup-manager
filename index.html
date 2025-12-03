@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lookup Manager v2.0.0</title>
-    <!-- Version 2.0.0 - December 2, 2025 -->
+    <title>Lookup Manager v2.0.1</title>
+    <!-- Version 2.0.1 - December 3, 2025 -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -254,8 +254,8 @@
 
             // Help icon component with tooltip
             const HelpIcon = ({ tooltip }) => (
-                <span className="help-icon cursor-help">
-                    <i className="fas fa-question-circle text-blue-400 text-sm hover:text-blue-300 transition-colors"></i>
+                <span className={`help-icon cursor-help p-1 rounded ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'} transition-colors`}>
+                    <i className={`fas fa-question-circle text-sm ${darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-500 hover:text-blue-600'} transition-colors`}></i>
                     <span className={`help-tooltip ${darkMode ? 'help-tooltip-dark' : 'help-tooltip-light'}`}>
                         {tooltip}
                     </span>
@@ -2320,7 +2320,7 @@
 
                                         <div className="space-y-2 flex-1">
                                             <div>
-                                                <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>API Type</label>
+                                                <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>Product</label>
                                                 <select value={sourceApiType} onChange={(e) => {
                                                     setSourceApiType(e.target.value);
                                                     // Reset deploy state when source API type changes
@@ -2403,12 +2403,6 @@
                                                 </div>
                                                 );
                                             })()}
-
-                                            {sourceApiType === 'search' && (
-                                                <div className={`p-2 text-xs rounded-lg ${darkMode ? 'bg-blue-900 bg-opacity-20 text-blue-300' : 'bg-blue-50 text-blue-700'}`}>
-                                                    <i className="fas fa-info-circle mr-1"></i>Uses <strong>default_search</strong>
-                                                </div>
-                                            )}
 
                                             <div>
                                                 <div className="flex items-center justify-between mb-1">
@@ -2869,7 +2863,7 @@
 
                                         <div className="space-y-2 flex-1">
                                             <div>
-                                                <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>API Type</label>
+                                                <label className={`block text-xs font-medium ${textSecondaryClass} mb-1`}>Product</label>
                                                 <select value={targetApiType} onChange={(e) => {
                                                     setTargetApiType(e.target.value);
                                                     // Reset deploy state when API type changes
@@ -2998,12 +2992,6 @@
                                                 </div>
                                                 );
                                             })()}
-
-                                            {targetApiType === 'search' && (
-                                                <div className={`p-2 text-xs rounded-lg ${darkMode ? 'bg-purple-900 bg-opacity-20 text-purple-300' : 'bg-purple-50 text-purple-700'}`}>
-                                                    <i className="fas fa-info-circle mr-1"></i>Uses <strong>default_search</strong>
-                                                </div>
-                                            )}
 
                                             {/* Selected Lookups with Target Type */}
                                             <div>
@@ -3175,9 +3163,9 @@
                                                         href="https://docs.cribl.io/cribl-as-code/create-update-lookups/#deploy-modified-lookup"
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        className={`p-2 rounded-lg ${darkMode ? 'bg-blue-900 bg-opacity-30 hover:bg-opacity-50 text-blue-400' : 'bg-blue-50 hover:bg-blue-100 text-blue-600'} transition-all flex items-center justify-center`}
+                                                        className={`p-1 rounded ${darkMode ? 'hover:bg-gray-700 text-blue-400 hover:text-blue-300' : 'hover:bg-gray-200 text-blue-500 hover:text-blue-600'} transition-all flex items-center justify-center`}
                                                     >
-                                                        <i className="fas fa-info-circle"></i>
+                                                        <i className="fas fa-info-circle text-sm"></i>
                                                     </a>
                                                     {/* Popup on hover */}
                                                     <div className={`absolute bottom-full right-0 mb-2 w-64 p-3 rounded-lg shadow-lg ${darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'} opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50`}>
@@ -3206,12 +3194,20 @@
                                 {/* Lookup Editor Panel */}
                                 <div className={`${cardClass} rounded-xl p-5`}>
                                     <div className={`flex items-center justify-between ${lookupEditorMinimized ? '' : 'mb-3'}`}>
-                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}>
-                                            <i className="fas fa-edit mr-2"></i>
-                                            Lookup Editor
-                                        </h3>
+                                        <div className="flex items-center flex-1 cursor-pointer" onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}>
+                                            <h3 className={`text-base font-bold ${textClass} flex items-center`}>
+                                                <i className="fas fa-edit mr-2"></i>
+                                                Lookup Editor
+                                            </h3>
+                                        </div>
                                         <div className="flex items-center space-x-2">
-                                            <HelpIcon tooltip="View and edit lookup file contents before transfer. Upload local files, rename lookups, or switch between text and table editing modes for CSV files." />
+                                            <button
+                                                onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}
+                                                className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
+                                                title={lookupEditorMinimized ? "Expand" : "Minimize"}
+                                            >
+                                                <i className={`fas fa-chevron-${lookupEditorMinimized ? 'down' : 'up'}`}></i>
+                                            </button>
                                             {!lookupEditorMinimized && lookupEditorOpen && (lookupContent || uploadedFileName || isBinaryFile || isFileTooLarge) && (
                                                 <>
                                                     {/* Text/Table toggle - only show for CSV files */}
@@ -3296,13 +3292,7 @@
                                                     </button>
                                                 </>
                                             )}
-                                            <button
-                                                onClick={() => setLookupEditorMinimized(!lookupEditorMinimized)}
-                                                className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
-                                                title={lookupEditorMinimized ? "Expand" : "Minimize"}
-                                            >
-                                                <i className={`fas fa-chevron-${lookupEditorMinimized ? 'down' : 'up'}`}></i>
-                                            </button>
+                                            <HelpIcon tooltip="View and edit lookup file contents before transfer. Upload local files, rename lookups, or switch between text and table editing modes for CSV files." />
                                         </div>
                                     </div>
 
@@ -3673,12 +3663,20 @@
                                 {/* Console */}
                                 <div className={`${cardClass} rounded-2xl p-6`}>
                                     <div className={`flex items-center justify-between ${consoleMinimized ? '' : 'mb-4'}`}>
-                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setConsoleMinimized(!consoleMinimized)}>
-                                            <i className="fas fa-terminal mr-2"></i>
-                                            Console
-                                        </h3>
+                                        <div className="flex items-center flex-1 cursor-pointer" onClick={() => setConsoleMinimized(!consoleMinimized)}>
+                                            <h3 className={`text-base font-bold ${textClass} flex items-center`}>
+                                                <i className="fas fa-terminal mr-2"></i>
+                                                Console
+                                            </h3>
+                                        </div>
                                         <div className="flex items-center space-x-2">
-                                            <HelpIcon tooltip="Real-time activity log showing all operations including transfers, commits, deployments, and any errors or warnings." />
+                                            <button
+                                                onClick={() => setConsoleMinimized(!consoleMinimized)}
+                                                className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
+                                                title={consoleMinimized ? "Expand" : "Minimize"}
+                                            >
+                                                <i className={`fas fa-chevron-${consoleMinimized ? 'down' : 'up'}`}></i>
+                                            </button>
                                             {!consoleMinimized && consoleLogs.length > 0 && (
                                                 <button
                                                     onClick={() => setConsoleLogs([])}
@@ -3687,13 +3685,7 @@
                                                     <i className="fas fa-eraser mr-1"></i>Clear
                                                 </button>
                                             )}
-                                            <button
-                                                onClick={() => setConsoleMinimized(!consoleMinimized)}
-                                                className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
-                                                title={consoleMinimized ? "Expand" : "Minimize"}
-                                            >
-                                                <i className={`fas fa-chevron-${consoleMinimized ? 'down' : 'up'}`}></i>
-                                            </button>
+                                            <HelpIcon tooltip="Real-time activity log showing all operations including transfers, commits, deployments, and any errors or warnings." />
                                         </div>
                                     </div>
 
@@ -3717,12 +3709,20 @@
                                 {/* curl Commands */}
                                 <div className={`${cardClass} rounded-2xl p-6 shadow-lg`}>
                                     <div className={`flex items-center justify-between ${apiCommandsMinimized ? '' : 'mb-4'}`}>
-                                        <h3 className={`text-base font-bold ${textClass} flex items-center cursor-pointer`} onClick={() => setApiCommandsMinimized(!apiCommandsMinimized)}>
-                                            <i className="fas fa-code mr-2"></i>
-                                            curl Commands
-                                        </h3>
+                                        <div className="flex items-center flex-1 cursor-pointer" onClick={() => setApiCommandsMinimized(!apiCommandsMinimized)}>
+                                            <h3 className={`text-base font-bold ${textClass} flex items-center`}>
+                                                <i className="fas fa-code mr-2"></i>
+                                                curl Commands
+                                            </h3>
+                                        </div>
                                         <div className="flex items-center space-x-2">
-                                            <HelpIcon tooltip="curl equivalents of API calls made to Cribl Cloud. Copy and run these commands in your terminal to replicate operations." />
+                                            <button
+                                                onClick={() => setApiCommandsMinimized(!apiCommandsMinimized)}
+                                                className={`p-1.5 rounded-lg ${darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-200 text-gray-500'} transition-all`}
+                                                title={apiCommandsMinimized ? "Expand" : "Minimize"}
+                                            >
+                                                <i className={`fas fa-chevron-${apiCommandsMinimized ? 'down' : 'up'}`}></i>
+                                            </button>
                                             {!apiCommandsMinimized && (
                                                 <>
                                                     <button
@@ -3755,13 +3755,7 @@
                                                     </button>
                                                 </>
                                             )}
-                                            <button
-                                                onClick={() => setApiCommandsMinimized(!apiCommandsMinimized)}
-                                                className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 transition-all"
-                                                title={apiCommandsMinimized ? "Expand" : "Minimize"}
-                                            >
-                                                <i className={`fas fa-chevron-${apiCommandsMinimized ? 'down' : 'up'}`}></i>
-                                            </button>
+                                            <HelpIcon tooltip="curl equivalents of API calls made to Cribl Cloud. Copy and run these commands in your terminal to replicate operations." />
                                         </div>
                                     </div>
 
@@ -4040,11 +4034,11 @@
                                         </div>
                                     </div>
 
-                                    {/* API Types */}
+                                    {/* Products */}
                                     <div>
                                         <h3 className="text-sm font-semibold mb-2 flex items-center">
                                             <i className="fas fa-sitemap text-orange-500 mr-2"></i>
-                                            API Types
+                                            Products
                                         </h3>
                                         <div className="space-y-1 ml-2">
                                             <div><span className="font-semibold text-blue-500">Stream</span> — Worker groups with git-based commit/deploy</div>
