@@ -2,7 +2,7 @@
 
 A web-based tool for managing and transferring lookup tables between Cribl Cloud worker groups across Stream, Search, and Edge deployments.
 
-**Version: 2.1.0** | December 2025
+**Version: 2.2.0** | December 2025
 
 ## Features
 
@@ -315,7 +315,8 @@ For issues, questions, or contributions, please [open an issue](your-repo-url/is
 
 ## Changelog
 
-### Version 2.1.0 (December 2025)
+### Version 2.2.0 (December 2025)
+- **Virtual Environment Support**: Added venv setup instructions to documentation
 - **Smart Table Column Sizing**: Columns auto-size based on content length
 - **Auto Word Wrap**: Columns with long content (>40 chars) automatically enable word wrap
 - **Word Wrap Toggle**: New wrap icon in column headers to toggle word wrap per column
