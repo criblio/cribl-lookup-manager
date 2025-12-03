@@ -233,6 +233,7 @@
             const [uploadedFileName, setUploadedFileName] = useState('');
 
             const [editedLookupName, setEditedLookupName] = useState('');
+            const [originalSourceLookup, setOriginalSourceLookup] = useState(''); // Original filename from source (for fetching during transfer)
             const [lookupContent, setLookupContent] = useState('');
             const [isBinaryFile, setIsBinaryFile] = useState(false);
             const [isFileTooLarge, setIsFileTooLarge] = useState(false); // Files > 10MB cannot be edited
@@ -697,7 +698,14 @@
 
                 // Multi-select mode (bulk transfer)
                 if (selectedLookups.size > 0 && targetGroupsList.length > 0) {
-                    const fileNames = Array.from(selectedLookups).map(f => stripPackPrefix(f));
+                    const fileNames = Array.from(selectedLookups).map(f => {
+                        // Check if this file was renamed in the editor
+                        const isEdited = originalSourceLookup === f || stripPackPrefix(originalSourceLookup) === f;
+                        if (isEdited && savedLookupName && savedLookupName !== stripPackPrefix(f)) {
+                            return savedLookupName; // Use renamed name
+                        }
+                        return stripPackPrefix(f);
+                    });
                     const apiTypeLabel = sourceApiType.charAt(0).toUpperCase() + sourceApiType.slice(1);
                     const targetLabel = targetApiType === 'search' ? 'Search' : (targetApiType === 'edge' ? 'Fleets' : 'Worker Groups');
 
@@ -731,7 +739,7 @@
                 else if (selectedLookups.size === 0 && prevBulkSizeRef.current > 0) {
                     prevBulkSizeRef.current = 0;
                 }
-            }, [selectedLookup, selectedLookups, selectedSourceGroup, selectedTargetGroup, selectedTargetGroups, sourceApiType, targetApiType, savedLookupName, transferring]);
+            }, [selectedLookup, selectedLookups, selectedSourceGroup, selectedTargetGroup, selectedTargetGroups, sourceApiType, targetApiType, savedLookupName, originalSourceLookup, transferring]);
 
             useEffect(() => {
                 // Track unsaved changes
@@ -1195,12 +1203,29 @@
 
                         // Get per-lookup type (falls back to global default)
                         const thisLookupType = getLookupType(lookupFilename);
-                        addConsoleLog(`[${operationCount}/${totalOperations}] ${lookupFilename} -> ${targetGroup} (${thisLookupType === 'memory' ? 'memory' : 'disk'})`, 'info');
 
-                        // Strip pack prefix for target filename
-                        const parts = lookupFilename.split('.');
-                        const isPack = parts.length > 2;
-                        const targetFilename = isPack ? parts.slice(1).join('.') : lookupFilename;
+                        // Check if this file was edited/renamed in the editor
+                        const isEditedFile = originalSourceLookup === lookupFilename ||
+                                            stripPackPrefix(originalSourceLookup) === lookupFilename ||
+                                            originalSourceLookup === stripPackPrefix(lookupFilename);
+                        const hasEditorContent = isEditedFile && (savedLookupContent || savedLookupName);
+
+                        // Determine source and target filenames
+                        let sourceFilename = lookupFilename;
+                        let targetFilename;
+
+                        if (hasEditorContent && savedLookupName) {
+                            // Use original source filename for fetching, renamed name for target
+                            sourceFilename = originalSourceLookup || lookupFilename;
+                            targetFilename = savedLookupName;
+                            addConsoleLog(`[${operationCount}/${totalOperations}] ${sourceFilename} -> ${targetFilename} -> ${targetGroup} (renamed, ${thisLookupType === 'memory' ? 'memory' : 'disk'})`, 'info');
+                        } else {
+                            // Strip pack prefix for target filename
+                            const parts = lookupFilename.split('.');
+                            const isPack = parts.length > 2;
+                            targetFilename = isPack ? parts.slice(1).join('.') : lookupFilename;
+                            addConsoleLog(`[${operationCount}/${totalOperations}] ${lookupFilename} -> ${targetGroup} (${thisLookupType === 'memory' ? 'memory' : 'disk'})`, 'info');
+                        }
 
                         try {
                             const res = await fetch(`${API_BASE}/api/transfer`, {
@@ -1209,11 +1234,13 @@
                                 body: JSON.stringify({
                                     source_group: sourceGroup,
                                     target_group: targetGroup,
-                                    lookup_filename: lookupFilename,
+                                    lookup_filename: sourceFilename,
                                     target_filename: targetFilename,
                                     source_api_type: sourceApiType,
                                     target_api_type: targetApiType,
-                                    lookup_type: thisLookupType
+                                    lookup_type: thisLookupType,
+                                    // If we have edited content, send it directly
+                                    content: hasEditorContent ? savedLookupContent : undefined
                                 })
                             });
                             const data = await res.json();
@@ -1631,6 +1658,7 @@
                 setLookupEditorOpen(false);
                 setLookupContent('');
                 setEditedLookupName('');
+                setOriginalSourceLookup('');
                 setSavedLookupName('');
                 setSavedLookupContent('');
                 setHasUnsavedChanges(false);
@@ -2784,6 +2812,12 @@
                                                                         const isBinary = l.id.toLowerCase().endsWith('.mmdb') || l.id.toLowerCase().endsWith('.gz');
                                                                         const isTooLarge = l.size > MAX_EDITABLE_SIZE;
                                                                         try {
+                                                                            // Auto-select the lookup when editing
+                                                                            setSelectedLookup(l.id);
+                                                                            setSelectedLookups(new Set([l.id]));
+
+                                                                            // Track original source filename for transfer (in case of rename)
+                                                                            setOriginalSourceLookup(l.id);
                                                                             setEditedLookupName(stripPackPrefix(l.id));
                                                                             setSavedLookupName(stripPackPrefix(l.id));
                                                                             setUploadedFileName('');
@@ -3002,9 +3036,16 @@
                                                     <div className={`max-h-32 overflow-y-auto border rounded-lg ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
                                                         {Array.from(selectedLookups).map(lookupId => {
                                                             const lookup = lookups.find(l => l.id === lookupId);
+                                                            // Check if this lookup was renamed in the editor
+                                                            const isEdited = originalSourceLookup === lookupId || stripPackPrefix(originalSourceLookup) === lookupId;
+                                                            const displayName = (isEdited && savedLookupName) ? savedLookupName : stripPackPrefix(lookupId);
+                                                            const wasRenamed = isEdited && savedLookupName && savedLookupName !== stripPackPrefix(lookupId);
                                                             return (
                                                                 <div key={lookupId} className={`flex items-center px-2 py-1.5 text-xs ${darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}>
-                                                                    <span className={`flex-1 truncate ${textClass}`}>{stripPackPrefix(lookupId)}</span>
+                                                                    <span className={`flex-1 truncate ${textClass}`}>
+                                                                        {displayName}
+                                                                        {wasRenamed && <span className={`ml-1 ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>(renamed)</span>}
+                                                                    </span>
                                                                     <select
                                                                         value={getLookupType(lookupId)}
                                                                         onChange={(e) => setLookupTypeFor(lookupId, e.target.value)}
@@ -3022,7 +3063,12 @@
                                                     <div className={`p-2 rounded-lg border ${darkMode ? 'border-gray-600 bg-gray-800' : 'border-gray-300 bg-white'}`}>
                                                         <div className="flex items-center text-xs">
                                                             <i className="fas fa-check-circle text-green-500 mr-2"></i>
-                                                            <span className={`flex-1 ${textClass}`}>{stripPackPrefix(savedLookupName || selectedLookup)}</span>
+                                                            <span className={`flex-1 ${textClass}`}>
+                                                                {stripPackPrefix(savedLookupName || selectedLookup)}
+                                                                {savedLookupName && savedLookupName !== stripPackPrefix(selectedLookup) && (
+                                                                    <span className={`ml-1 ${darkMode ? 'text-purple-400' : 'text-purple-600'}`}>(renamed)</span>
+                                                                )}
+                                                            </span>
                                                             <select
                                                                 value={lookupType}
                                                                 onChange={(e) => setLookupType(e.target.value)}
@@ -3278,6 +3324,7 @@
                                                             setLookupEditorOpen(true);
                                                             setLookupContent('');
                                                             setEditedLookupName('');
+                                                            setOriginalSourceLookup('');
                                                             setUploadedFileName('');
                                                             setSavedLookupContent('');
                                                             setSavedLookupName('');
