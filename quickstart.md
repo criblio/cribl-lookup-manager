@@ -50,6 +50,11 @@ Look at your browser URL when logged into Cribl Cloud:
 ### 2. Install Dependencies
 
 ```bash
+# (Recommended) Create a virtual environment first
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 

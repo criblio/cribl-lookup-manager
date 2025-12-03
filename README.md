@@ -59,12 +59,24 @@ git clone https://github.com/criblio/cribl-lookup-manager
 cd cribl-lookup-manager
 ```
 
-2. Install Python dependencies:
+2. (Recommended) Create and activate a virtual environment:
+```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate it (macOS/Linux)
+source venv/bin/activate
+
+# Activate it (Windows)
+venv\Scripts\activate
+```
+
+3. Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure credentials (choose one option):
+4. Configure credentials (choose one option):
 
 **Option A: Environment Variables (Recommended - More Secure)**
 ```bash
