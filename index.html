@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lookup Manager v2.0.1</title>
-    <!-- Version 2.0.1 - December 3, 2025 -->
+    <title>Lookup Manager v2.1.0</title>
+    <!-- Version 2.1.0 - December 3, 2025 -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -2309,12 +2309,15 @@
                                                         Organization ID
                                                         <div className="relative inline-block ml-2 group">
                                                             <i className="fas fa-info-circle text-blue-500 cursor-help"></i>
-                                                            <div className={`absolute left-0 top-6 w-80 ${darkMode ? 'bg-gray-700' : 'bg-gray-800'} text-white text-xs rounded-lg p-3 shadow-lg hidden group-hover:block z-50`}>
-                                                                <p className="font-semibold mb-1">Organization ID Examples:</p>
-                                                                <p className="mb-2">[ERROR] Just the ID: <code className="bg-gray-900 px-1 rounded">abc-def-ghi</code></p>
-                                                                <p className="mb-2">[ERROR] Full URL: <code className="bg-gray-900 px-1 rounded">https://abc-def-ghi.cribl.cloud</code></p>
-                                                                <p className="mb-2">[ERROR] Subdomain: <code className="bg-gray-900 px-1 rounded">abc-def-ghi.cribl.cloud</code></p>
-                                                                <p className="mb-2">The app will extract the org ID automatically from any format!</p>
+                                                            <div className={`absolute left-0 top-6 w-96 ${darkMode ? 'bg-gray-700' : 'bg-gray-800'} text-white text-xs rounded-lg p-3 shadow-lg hidden group-hover:block z-50`}>
+                                                                <p className="font-semibold mb-2">Where to find your Organization ID:</p>
+                                                                <p className="mb-2">Look at your Cribl Cloud URL in the browser address bar:</p>
+                                                                <p className="mb-2 pl-2"><code className="bg-gray-900 px-1 rounded">https://<span className="text-yellow-300">main-your-org-name</span>.cribl.cloud</code></p>
+                                                                <p className="mb-3 text-yellow-300 font-semibold">⚠️ Include the workspace prefix (e.g., "main-")</p>
+                                                                <p className="font-semibold mb-1">Accepted formats:</p>
+                                                                <p className="mb-1 pl-2">✓ <code className="bg-gray-900 px-1 rounded">main-your-org-name</code></p>
+                                                                <p className="mb-1 pl-2">✓ <code className="bg-gray-900 px-1 rounded">main-your-org-name.cribl.cloud</code></p>
+                                                                <p className="mb-1 pl-2">✓ <code className="bg-gray-900 px-1 rounded">https://main-your-org-name.cribl.cloud</code></p>
                                                             </div>
                                                         </div>
                                                     </label>
@@ -2323,7 +2326,7 @@
                                                         value={organizationId}
                                                         onChange={(e) => setOrganizationId(e.target.value)}
                                                         className={`w-full px-4 py-3 rounded-lg border ${inputClass} focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all`}
-                                                        placeholder="Org ID or URL (e.g., your-org.cribl.cloud)"
+                                                        placeholder="e.g., main-your-org-name.cribl.cloud"
                                                         required
                                                     />
                                                 </div>

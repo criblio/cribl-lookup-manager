@@ -35,10 +35,17 @@ organization_id = your_organization_id_here
 3. Create a new API credential
 4. Copy the Client ID and Client Secret
 
-**Organization ID formats accepted:**
-- Direct tenant URL: `main-amazing-varahamihira.cribl.cloud`
-- Just the subdomain: `main-amazing-varahamihira`
-- Full URL: `https://main-amazing-varahamihira.cribl.cloud/`
+**Organization ID - where to find it:**
+
+Look at your browser URL when logged into Cribl Cloud:
+`https://main-your-org-name.cribl.cloud`
+
+⚠️ **Important:** Include the workspace prefix (usually `main-`)!
+
+**Accepted formats:**
+- `main-your-org-name`
+- `main-your-org-name.cribl.cloud`
+- `https://main-your-org-name.cribl.cloud/`
 
 ### 2. Install Dependencies
 

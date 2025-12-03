@@ -2,7 +2,7 @@
 
 A web-based tool for managing and transferring lookup tables between Cribl Cloud worker groups across Stream, Search, and Edge deployments.
 
-**Version: 2.0.1** | December 2025
+**Version: 2.1.0** | December 2025
 
 ## Features
 
@@ -70,7 +70,7 @@ pip install -r requirements.txt
 ```bash
 export CRIBL_CLIENT_ID=your_client_id_here
 export CRIBL_CLIENT_SECRET=your_client_secret_here
-export CRIBL_ORG_ID=your_organization_id_here
+export CRIBL_ORG_ID=main-your-org-name
 ```
 
 **Option B: Config File**
@@ -83,8 +83,24 @@ Edit `config.ini` and add your Cribl Cloud credentials:
 [cribl]
 client_id = your_client_id_here
 client_secret = your_client_secret_here
-organization_id = your_organization_id_here
+organization_id = main-your-org-name
 ```
+
+**Finding your Organization ID:**
+
+Look at your browser URL when logged into Cribl Cloud:
+```
+https://main-your-org-name.cribl.cloud
+       └──────────────────┘
+       This is your Organization ID
+```
+
+⚠️ **Important:** Include the workspace prefix (usually `main-`)!
+
+Accepted formats:
+- `main-your-org-name`
+- `main-your-org-name.cribl.cloud`
+- `https://main-your-org-name.cribl.cloud/`
 
 > **Security Note:** The application automatically sets restrictive file permissions (600) on config.ini to protect your credentials. Environment variables are preferred as they don't persist secrets to disk.
 
@@ -286,6 +302,14 @@ DEBUG_MODE = True
 For issues, questions, or contributions, please [open an issue](your-repo-url/issues).
 
 ## Changelog
+
+### Version 2.1.0 (December 2025)
+- **Smart Table Column Sizing**: Columns auto-size based on content length
+- **Auto Word Wrap**: Columns with long content (>40 chars) automatically enable word wrap
+- **Word Wrap Toggle**: New wrap icon in column headers to toggle word wrap per column
+- **Resizable Columns**: Drag column dividers to manually resize columns
+- **Improved Organization ID Help**: Clearer instructions emphasizing workspace prefix (e.g., "main-")
+- **Table Fills Panel**: Tables with few columns now properly fill the panel width
 
 ### Version 2.0.1 (December 2025)
 - **Large File Protection**: Files over 10MB open in rename-only mode

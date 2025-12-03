@@ -8,10 +8,18 @@ client_id = your_client_id_here
 client_secret = your_client_secret_here
 
 # Cribl Cloud Organization ID or URL
-# You can use any of these formats:
-#   - Just org ID: my-organization-name
-#   - Full URL: https://my-organization-name.cribl.cloud/
-# Example: main-yourorg-name
+# IMPORTANT: Include the workspace prefix (usually "main-")!
+#
+# Find this in your browser URL when logged into Cribl Cloud:
+#   https://main-your-org-name.cribl.cloud
+#          ^^^^^^^^^^^^^^^^^^^^ <-- this is your organization ID
+#
+# Accepted formats:
+#   - main-your-org-name
+#   - main-your-org-name.cribl.cloud
+#   - https://main-your-org-name.cribl.cloud/
+#
+# Example: main-amazing-varahamihira
 organization_id = your_organization_id_here
 
 # How to get these credentials:
