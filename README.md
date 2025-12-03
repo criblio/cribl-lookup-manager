@@ -4,6 +4,8 @@ A web-based tool for managing and transferring lookup tables between Cribl Cloud
 
 **Version: 2.2.0** | December 2025
 
+> **Note:** This tool is designed for **Cribl Cloud** only. On-premises Cribl deployments use different authentication and API patterns that are not currently supported.
+
 ## Features
 
 ### Core Functionality
